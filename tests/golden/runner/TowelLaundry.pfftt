@@ -1,0 +1,26 @@
+2026-08-09T11:02:41.118Z 000132 / Start file:///home/andrew/src/technique-lang/technique/tests/golden/runner/TowelLaundry.tq?library=system
+2026-08-09T11:02:41.118Z 000132 /launder_towels: Begin
+2026-08-09T11:02:41.118Z 000132 /launder_towels:/1 Begin
+2026-08-09T11:02:41.119Z 000132 /launder_towels:/1 Done [ "blue", "green" ]
+2026-08-09T11:02:41.119Z 000132 /launder_towels:/2 Begin
+2026-08-09T11:02:41.119Z 000132 /launder_towels:/2/[1]/-1 Begin
+2026-08-09T11:02:41.119Z 000132 /launder_towels:/2/[1]/-1 Invoke dry_towel:
+2026-08-09T11:02:41.119Z 000132 /dry_towel: Begin
+2026-08-09T11:02:41.119Z 000132 /dry_towel:/1 Begin
+2026-08-09T11:02:41.120Z 000132 /dry_towel:/1 Skip
+2026-08-09T11:02:41.120Z 000132 /dry_towel:/2 Begin
+2026-08-09T11:02:41.120Z 000132 /dry_towel:/2 Skip
+2026-08-09T11:02:41.120Z 000132 /dry_towel: Skip
+2026-08-09T11:02:41.120Z 000132 /launder_towels:/2/[1]/-1 Skip
+2026-08-09T11:02:41.120Z 000132 /launder_towels:/2/[2]/-1 Begin
+2026-08-09T11:02:41.120Z 000132 /launder_towels:/2/[2]/-1 Invoke dry_towel:
+2026-08-09T11:02:41.121Z 000132 /dry_towel: Begin
+2026-08-09T11:02:41.121Z 000132 /dry_towel:/1 Begin
+2026-08-09T11:02:41.121Z 000132 /dry_towel:/1 Skip
+2026-08-09T11:02:41.121Z 000132 /dry_towel:/2 Begin
+2026-08-09T11:02:41.121Z 000132 /dry_towel:/2 Skip
+2026-08-09T11:02:41.121Z 000132 /dry_towel: Skip
+2026-08-09T11:02:41.121Z 000132 /launder_towels:/2/[2]/-1 Skip
+2026-08-09T11:02:41.122Z 000132 /launder_towels:/2 Skip
+2026-08-09T11:02:41.122Z 000132 /launder_towels: Done ()
+2026-08-09T11:02:41.122Z 000132 / Finish
