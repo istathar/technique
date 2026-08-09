@@ -381,8 +381,11 @@ fn measure_times(records: &[Record]) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
             State::Start { .. } => {
                 started = Some(i);
             }
-            State::Begin => {
+            State::Begin(supplied) => {
                 begun.insert(path, i);
+                if !supplied.is_empty() && i > 0 {
+                    spans[i] = elapsed(stamps[i - 1], stamps[i]);
+                }
             }
             State::Execute { .. } => {
                 executing.insert(path, i);
@@ -400,15 +403,6 @@ fn measure_times(records: &[Record]) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
             State::Finish | State::Stop => {
                 if let Some(opened) = started {
                     spans[i] = elapsed(stamps[opened], stamps[i]);
-                }
-            }
-            // The inputs a procedure was given close the asking for them: the
-            // dispatch recorded on arrival, or the run's Start for the entry
-            // procedure's own parameters. Either way the span is the wait for
-            // the user to supply them.
-            State::Input(_) => {
-                if i > 0 {
-                    spans[i] = elapsed(stamps[i - 1], stamps[i]);
                 }
             }
             State::Resume | State::Invoke(_) => {}
@@ -455,8 +449,7 @@ fn keyword(state: &State) -> &'static str {
         State::Invoke(_) => "Invoke",
         State::Execute { .. } => "Execute",
         State::Return(_) => "Return",
-        State::Input(_) => "Input",
-        State::Begin => "Begin",
+        State::Begin(_) => "Begin",
         State::Done(_) => "Done",
         State::Skip => "Skip",
         State::Fail(_) => "Fail",
@@ -474,12 +467,12 @@ fn payload(state: &State) -> Option<String> {
         State::Return(value) | State::Done(value) | State::Fail(value) => value
             .as_ref()
             .map(serialize_value),
-        State::Input(supplied) => {
+        State::Begin(supplied) => {
             let mut text = String::new();
             format_supplied(&mut text, supplied);
             Some(text)
         }
-        State::Finish | State::Stop | State::Resume | State::Begin | State::Skip => None,
+        State::Finish | State::Stop | State::Resume | State::Skip => None,
     }
 }
 

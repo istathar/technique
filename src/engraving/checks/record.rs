@@ -242,7 +242,7 @@ fn open_skips_resume_and_begin_during_replay() {
         recorded: "2026-05-14T12:00:01Z".to_string(),
         run_id: RunId(1),
         path: "/test:1".to_string(),
-        state: State::Begin,
+        state: State::Begin(Vec::new()),
     }));
     file.push_str(&format_record(&Record {
         recorded: "2026-05-14T12:00:02Z".to_string(),
@@ -339,11 +339,11 @@ fn format_record_pins_on_disk_text() {
         recorded: "2026-05-17T00:28:30Z".to_string(),
         run_id: RunId(15003),
         path: "/local_network:2".to_string(),
-        state: State::Begin,
+        state: State::Begin(Vec::new()),
     };
     assert_eq!(
         format_record(&record),
-        "2026-05-17T00:28:30Z 015003 /local_network:2 Begin\n"
+        "2026-05-17T00:28:30Z 015003 /local_network:2 Begin ()\n"
     );
 
     let record = Record {
@@ -519,7 +519,7 @@ fn record_round_trips_through_format_and_parse() {
             recorded: "2026-05-14T12:00:00Z".to_string(),
             run_id: RunId(1),
             path: "/a:1".to_string(),
-            state: State::Begin,
+            state: State::Begin(Vec::new()),
         },
         Record {
             recorded: "2026-05-14T12:00:00Z".to_string(),
@@ -613,7 +613,7 @@ fn record_round_trips_through_format_and_parse() {
             recorded: "2026-05-14T12:00:06Z".to_string(),
             run_id: RunId(1),
             path: "/decommission:".to_string(),
-            state: State::Input(vec![
+            state: State::Begin(vec![
                 Supplied {
                     value: Value::Literali("acme-corp".to_string()),
                     name: Some("authority".to_string()),

@@ -174,8 +174,10 @@ impl Store {
                 State::Skip | State::Fail(_) => {
                     completed.insert(record.path, value::Value::Unitus);
                 }
-                State::Input(supplied) => {
-                    inputs.insert(record.path, supplied);
+                State::Begin(supplied) => {
+                    if !supplied.is_empty() {
+                        inputs.insert(record.path, supplied);
+                    }
                 }
                 State::Start { .. }
                 | State::Finish
@@ -183,8 +185,7 @@ impl Store {
                 | State::Resume
                 | State::Invoke(_)
                 | State::Execute { .. }
-                | State::Return(_)
-                | State::Begin => {}
+                | State::Return(_) => {}
             }
         }
         Ok((document, libraries, completed, inputs, run_dir))

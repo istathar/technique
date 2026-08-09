@@ -24,7 +24,7 @@ fn trail() -> Vec<Record> {
         record(
             "2026-08-04T22:50:36.870Z",
             "/connectivity_check:",
-            State::Begin,
+            State::Begin(Vec::new()),
         ),
         record(
             "2026-08-04T22:50:40.546Z",
@@ -61,7 +61,7 @@ fn columns_align_in_the_order_given() {
         body[0],
         "/                         +0.0  Start   file:///tmp/NetworkProbe.tq"
     );
-    assert_eq!(body[1], "connectivity_check:       +0.0  Begin");
+    assert_eq!(body[1], "connectivity_check:       +0.0  Begin   ()");
     assert_eq!(body[2], "connectivity_check:       +3.7  Done    ()");
     assert_eq!(body[3], "/                         +3.7  Finish");
 }
@@ -134,7 +134,7 @@ fn inputs_carry_the_wait_to_supply_them() {
         record(
             "2026-08-04T22:50:45.615Z",
             "/decomission_customer:/I/delete_resources:",
-            State::Input(vec![Supplied {
+            State::Begin(vec![Supplied {
                 value: Value::Literali("Rebecca".to_string()),
                 name: Some("authority".to_string()),
             }]),
@@ -142,7 +142,7 @@ fn inputs_carry_the_wait_to_supply_them() {
         record(
             "2026-08-04T22:50:45.615Z",
             "/decomission_customer:/I/delete_resources:",
-            State::Begin,
+            State::Begin(Vec::new()),
         ),
     ];
     let columns = [Column::Duration, Column::State];
@@ -153,7 +153,7 @@ fn inputs_carry_the_wait_to_supply_them() {
         .collect();
 
     assert_eq!(body[1], "       Invoke");
-    assert_eq!(body[2], "8.746  Input");
+    assert_eq!(body[2], "8.746  Begin");
 }
 
 // An Execute is closed by the Return that carries what the host call produced,
@@ -248,7 +248,7 @@ fn state_and_value_are_separate_columns() {
         record(
             "2026-08-04T22:50:36.870Z",
             "/connectivity_check:",
-            State::Input(vec![Supplied {
+            State::Begin(vec![Supplied {
                 value: Value::Quanticle(crate::value::Numeric::Integral(0)),
                 name: Some("s".to_string()),
             }]),
@@ -274,7 +274,7 @@ fn state_and_value_are_separate_columns() {
         .collect();
 
     assert_eq!(body[0], "Start    file:///tmp/NetworkProbe.tq");
-    assert_eq!(body[1], "Input    ( 0 ~ s )");
+    assert_eq!(body[1], "Begin    ( 0 ~ s )");
     assert_eq!(body[2], "Execute  exec()");
     assert_eq!(body[3], "Fail     \"unreachable\"");
 }

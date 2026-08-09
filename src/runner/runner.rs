@@ -11,8 +11,8 @@ use super::path::{PathSegment, QualifiedPath};
 use crate::engraving::{Appender, InvokeTarget, Record, State, StoreError, Supplied};
 use crate::language;
 use crate::program::{
-    Executable, ExecutableRef, Invocable, Locale, Operation, Ordinal, Program, Subroutine,
-    SubroutineRef,
+    Executable, ExecutableRef, Fragment, Invocable, Locale, Operation, Ordinal, Program,
+    Subroutine, SubroutineRef,
 };
 use crate::value::Value;
 
@@ -224,8 +224,8 @@ impl<'i, D: Driver> Runner<'i, D> {
             let params = entry
                 .parameters
                 .unwrap_or(&[]);
-            self.restore_or_record_inputs(&mut env, &qualified, params)?;
-            self.begin_scope(&qualified)?;
+            let supplied = self.restore_or_collect_inputs(&mut env, &qualified, params)?;
+            self.begin_scope(&qualified, supplied)?;
             if params.is_empty() {
                 self.driver
                     .enter(&qualified, "");
@@ -708,19 +708,18 @@ impl<'i, D: Driver> Runner<'i, D> {
 
                     let formae = render_parameter_formae(subroutine.signature);
 
-                    // A prior run's recorded inputs for this callee. A
-                    // prompted argument (an elided call or a `?` hole) is
-                    // restored from here on resume, in prompted order, rather
-                    // than re-acquired. An argument the author supplied as a
-                    // source expression is re-evaluated, so a loop variable
-                    // still varies — and, being re-derivable, does not need
-                    // to be recorded.
+                    // A prior run's recorded inputs for this callee, in
+                    // parameter order. A prompted argument (an elided call or
+                    // a `?` hole) is restored from here on resume rather than
+                    // re-acquired; an argument the author supplied as a source
+                    // expression is re-evaluated, so a loop variable still
+                    // varies. Every argument, however it was arrived at, is
+                    // what the callee's Begin states it started with.
                     let recorded = self
                         .inputs
                         .get(&lexical)
                         .cloned();
-                    let mut prompted: Vec<Supplied> = Vec::new();
-                    let mut taken = 0usize;
+                    let mut supplied: Vec<Supplied> = Vec::new();
                     if invocable.elided {
                         for i in 0..subroutine.arity() {
                             let bind = params
@@ -731,7 +730,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                                 .map(|s| s.as_str());
                             let value = match recorded
                                 .as_ref()
-                                .and_then(|r| r.get(taken))
+                                .and_then(|r| r.get(i))
                             {
                                 Some(s) => s
                                     .value
@@ -744,11 +743,10 @@ impl<'i, D: Driver> Runner<'i, D> {
                                     other => return self.abandon(&lexical, other),
                                 },
                             };
-                            taken += 1;
                             if let Some(bind) = bind {
                                 local.extend(bind.to_string(), value.clone());
                             }
-                            prompted.push(Supplied {
+                            supplied.push(Supplied {
                                 value,
                                 name: bind.map(|b| b.to_string()),
                             });
@@ -765,7 +763,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                             if let Operation::Hole(_) = arg {
                                 let value = match recorded
                                     .as_ref()
-                                    .and_then(|r| r.get(taken))
+                                    .and_then(|r| r.get(i))
                                 {
                                     Some(s) => s
                                         .value
@@ -783,11 +781,10 @@ impl<'i, D: Driver> Runner<'i, D> {
                                         }
                                     }
                                 };
-                                taken += 1;
                                 if let Some(bind) = bind {
                                     local.extend(bind.to_string(), value.clone());
                                 }
-                                prompted.push(Supplied {
+                                supplied.push(Supplied {
                                     value,
                                     name: bind.map(|b| b.to_string()),
                                 });
@@ -799,20 +796,17 @@ impl<'i, D: Driver> Runner<'i, D> {
                                     arg,
                                 )?;
                                 if let Some(bind) = bind {
-                                    local.extend(bind.to_string(), value);
+                                    local.extend(bind.to_string(), value.clone());
                                 }
+                                supplied.push(Supplied {
+                                    value,
+                                    name: bind.map(|b| b.to_string()),
+                                });
                             }
                         }
                     }
 
-                    // Record the prompted inputs (answered just now) before
-                    // Begin, unless they were restored from a prior run (already
-                    // in the trail).
-                    if recorded.is_none() {
-                        self.record_inputs(&lexical, prompted)?;
-                    }
-
-                    self.begin_scope(&lexical)?;
+                    self.begin_scope(&lexical, supplied)?;
 
                     let saved = self
                         .path
@@ -885,7 +879,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                     return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
                 }
 
-                self.begin_scope(&qualified)?;
+                self.begin_scope(&qualified, Vec::new())?;
                 // Prompt at the departure, echoing the arguments flowing into
                 // the external Technque.
                 let echo = self.render_deferred_echo(env, &invocable.arguments)?;
@@ -1205,7 +1199,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 .pop();
             return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
         }
-        self.begin_scope(&qualified)?;
+        self.begin_scope(&qualified, Vec::new())?;
         let result = self.perform_section(env, numeral, title, body);
         self.path
             .pop();
@@ -1318,7 +1312,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             return Ok(Conclusion::Completed(Outcome::Done(value)));
         }
 
-        self.begin_scope(qualified)?;
+        self.begin_scope(qualified, Vec::new())?;
         let conclusion = self.walk_sequence(env, ops)?;
         if let Conclusion::Stopping = conclusion {
             return Ok(conclusion);
@@ -1383,7 +1377,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             recorded: now_iso8601(),
             run_id,
             path: qualified.to_string(),
-            state: State::Begin,
+            state: State::Begin(read_values(body, env)),
         };
         self.appender
             .append(&begin)?;
@@ -1595,7 +1589,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     /// Open a structural scope — the entry procedure, a Section, or an invoked
     /// procedure — pairing with the `Done` its `seal_scope` records on close, so
     /// every scope's address is bracketed `Begin`…`Done` just as a step's is.
-    fn begin_scope(&mut self, qualified: &str) -> Result<(), RunnerError> {
+    fn begin_scope(&mut self, qualified: &str, supplied: Vec<Supplied>) -> Result<(), RunnerError> {
         let run_id = self
             .appender
             .run_id();
@@ -1604,56 +1598,37 @@ impl<'i, D: Driver> Runner<'i, D> {
                 recorded: now_iso8601(),
                 run_id,
                 path: qualified.to_string(),
-                state: State::Begin,
-            })?;
-        Ok(())
-    }
-
-    /// Record the values supplied to a procedure's parameters at its own path,
-    /// so a resume restores them rather than re-prompting. A procedure with no
-    /// parameters records nothing.
-    fn record_inputs(
-        &mut self,
-        qualified: &str,
-        supplied: Vec<Supplied>,
-    ) -> Result<(), RunnerError> {
-        if supplied.is_empty() {
-            return Ok(());
-        }
-        let run_id = self
-            .appender
-            .run_id();
-        self.appender
-            .append(&Record {
-                recorded: now_iso8601(),
-                run_id,
-                path: qualified.to_string(),
-                state: State::Input(supplied),
+                state: State::Begin(supplied),
             })?;
         Ok(())
     }
 
     /// At a procedure's entry, restore its parameter bindings from a prior
-    /// run's recorded inputs if present (resume), otherwise record the inputs
+    /// run's recorded inputs if present (resume), otherwise gather the inputs
     /// it was called with (a fresh run). Used for the entry procedure, whose
-    /// arguments come from the command line.
-    fn restore_or_record_inputs(
+    /// arguments come from the command line. The values returned are the ones
+    /// its `Begin` records.
+    fn restore_or_collect_inputs(
         &mut self,
         env: &mut Environment,
         qualified: &str,
         params: &[language::Identifier<'i>],
-    ) -> Result<(), RunnerError> {
+    ) -> Result<Vec<Supplied>, RunnerError> {
         if let Some(supplied) = self
             .inputs
             .get(qualified)
             .cloned()
         {
-            for item in supplied {
-                if let Some(name) = item.name {
-                    env.extend(name, item.value);
+            for item in supplied.iter() {
+                if let Some(name) = &item.name {
+                    env.extend(
+                        name.clone(),
+                        item.value
+                            .clone(),
+                    );
                 }
             }
-            return Ok(());
+            return Ok(supplied);
         }
         let supplied = params
             .iter()
@@ -1668,7 +1643,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 ),
             })
             .collect();
-        self.record_inputs(qualified, supplied)
+        Ok(supplied)
     }
 
     /// Sign off a completed structural scope — a Section at its close, or the
@@ -1963,6 +1938,84 @@ fn record_state(conclusion: &Conclusion) -> State {
             }
         }
         Conclusion::Stopping => unreachable!(), // Stop is recorded as a lifecycle event, not a step result
+    }
+}
+
+/// The values a step reads, in the order the names are met, so its `Begin`
+/// states what it started with. A name not yet bound contributes nothing.
+fn read_values(op: &Operation, env: &Environment) -> Vec<Supplied> {
+    let mut names = Vec::new();
+    names_read(op, &mut names);
+    names
+        .into_iter()
+        .filter_map(|name| {
+            env.lookup(name)
+                .map(|value| Supplied {
+                    value: value.clone(),
+                    name: Some(name.to_string()),
+                })
+        })
+        .collect()
+}
+
+/// Gather the variables a node reads directly.
+fn names_read<'i>(op: &Operation<'i>, found: &mut Vec<&'i str>) {
+    match op {
+        Operation::Variable(id, _) => {
+            if !found.contains(&id.value) {
+                found.push(id.value);
+            }
+        }
+        Operation::Loop { over, body, .. } => {
+            if let Some(over) = over {
+                names_read(over, found);
+            }
+            names_read(body, found);
+        }
+        Operation::Within { bound, body, .. } => {
+            names_read(bound, found);
+            names_read(body, found);
+        }
+        Operation::Bind { value, .. } => names_read(value, found),
+        Operation::Cost(inner, _) => names_read(inner, found),
+        Operation::Sequence(ops, _)
+        | Operation::List(ops, _)
+        | Operation::Tuple(ops, _)
+        | Operation::Prologue(ops, _) => {
+            for op in ops {
+                names_read(op, found);
+            }
+        }
+        Operation::Invoke(invocable, _) => {
+            for arg in &invocable.arguments {
+                names_read(arg, found);
+            }
+        }
+        Operation::Execute(executable, _) => {
+            for arg in &executable.arguments {
+                names_read(arg, found);
+            }
+        }
+        Operation::String(fragments, _) => {
+            for fragment in fragments {
+                if let Fragment::Interpolation(op) = fragment {
+                    names_read(op, found);
+                }
+            }
+        }
+        Operation::Tablet(entries, _) => {
+            for entry in entries {
+                names_read(&entry.value, found);
+            }
+        }
+        Operation::Step { .. }
+        | Operation::Section { .. }
+        | Operation::Number(_, _)
+        | Operation::Response(_, _)
+        | Operation::Multiline(_, _, _)
+        | Operation::Prose(_, _)
+        | Operation::Hole(_)
+        | Operation::Unit(_) => {}
     }
 }
 

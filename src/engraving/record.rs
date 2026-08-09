@@ -64,8 +64,7 @@ pub enum State {
     Invoke(InvokeTarget),
     Execute { function: String },
     Return(Option<value::Value>),
-    Input(Vec<Supplied>),
-    Begin,
+    Begin(Vec<Supplied>),
     Done(Option<value::Value>),
     Skip,
     Fail(Option<value::Value>),
@@ -166,11 +165,10 @@ fn format_state(out: &mut String, state: &State) {
                 out.push_str(&serialize_value(v));
             }
         }
-        State::Input(supplied) => {
-            out.push_str("Input ");
+        State::Begin(supplied) => {
+            out.push_str("Begin ");
             format_supplied(out, supplied);
         }
-        State::Begin => out.push_str("Begin"),
         State::Done(value) => {
             out.push_str("Done");
             if let Some(v) = value {
@@ -193,6 +191,10 @@ fn format_state(out: &mut String, state: &State) {
 // value serialized by the value codec, a named parameter followed by `~ name`,
 // an unnamed one left bare.
 pub(crate) fn format_supplied(out: &mut String, supplied: &[Supplied]) {
+    if supplied.is_empty() {
+        out.push_str("()");
+        return;
+    }
     out.push('(');
     for (i, item) in supplied
         .iter()
@@ -398,15 +400,9 @@ fn parse_state(text: &str) -> Result<State, RecordError> {
             })
         }
         "Return" => Ok(State::Return(parse_optional_value(rest)?)),
-        "Input" => {
-            let payload = rest.ok_or(RecordError::MalformedState)?;
-            Ok(State::Input(parse_supplied(payload)?))
-        }
         "Begin" => {
-            if rest.is_some() {
-                return Err(RecordError::MalformedState);
-            }
-            Ok(State::Begin)
+            let payload = rest.ok_or(RecordError::MalformedState)?;
+            Ok(State::Begin(parse_supplied(payload)?))
         }
         "Done" => Ok(State::Done(parse_optional_value(rest)?)),
         "Skip" => {

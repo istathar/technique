@@ -10,7 +10,7 @@ use crate::program::{
     SubroutineRef,
 };
 use crate::resolution::resolve;
-use crate::runner::driver::{Automatic, Event, Mock, UserInput};
+use crate::runner::driver::{Automatic, Event, Mock, Scripted, UserInput};
 use crate::runner::evaluator::Environment;
 use crate::runner::library::Library;
 use crate::runner::runner::{
@@ -164,7 +164,7 @@ fn step_outcomes_recorded() {
     );
     let begin = parse_record(lines[1]).expect("parse begin");
     assert_eq!(begin.path, "/1");
-    assert_eq!(begin.state, State::Begin);
+    assert_eq!(begin.state, State::Begin(Vec::new()));
     let record = parse_record(lines[2]).expect("parse record");
     assert_eq!(record.path, "/1");
     let State::Done(_) = record.state else {
@@ -491,7 +491,7 @@ fn quit_propagates_and_stops_walking() {
         .collect();
     assert_eq!(lines.len(), 3);
     assert!(lines[0].contains(" Start "));
-    assert!(lines[1].ends_with(" Begin"));
+    assert!(lines[1].ends_with(" Begin ()"));
     assert!(lines[2].ends_with(" / Stop"));
 }
 
@@ -1489,7 +1489,7 @@ Prepare the ground { exec("true") } before the steps.
     // The exec runs (its trace between Begin and the outcome); the prologue
     // holds real work, so it records that work's outcome — Done — rather than
     // being stamped Skip by its prose tail.
-    let State::Begin = zero[0] else {
+    let State::Begin(_) = zero[0] else {
         panic!("expected Begin first at /check:/0, got {:?}", zero[0]);
     };
     let State::Done(_) = zero[zero.len() - 1] else {
@@ -1565,7 +1565,8 @@ fn loop_inside_step_produces_one_result() {
         })
         .collect();
     assert_eq!(lines.len(), 4);
-    assert!(lines[1].ends_with(" Begin"));
+    // The step reads the collection its Loop iterates, so its Begin states it.
+    assert!(lines[1].ends_with(" Begin ( [] ~ empty )"), "{}", lines[1]);
     assert!(lines[2].contains(" Done"));
     assert!(lines[3].ends_with(" Finish"));
 }
@@ -2769,7 +2770,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
         .filter(|record| record.path == "/<https://example.com/probe>")
         .map(|record| record.state)
         .collect();
-    assert_eq!(settled, vec![State::Begin, State::Skip]);
+    assert_eq!(settled, vec![State::Begin(Vec::new()), State::Skip]);
 
     // Under an automatic run there is no user to attest the external work
     // and nothing executed it, so it records Skip rather than a fabricated Done.
@@ -2792,7 +2793,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
         .filter(|record| record.path == "/<https://example.com/probe>")
         .map(|record| record.state)
         .collect();
-    assert_eq!(settled, vec![State::Begin, State::Skip]);
+    assert_eq!(settled, vec![State::Begin(Vec::new()), State::Skip]);
 }
 
 #[test]
@@ -3181,7 +3182,7 @@ fn invoke_records_supplied_input() {
         .contents()
         .to_string();
     assert!(
-        trail.contains("/hail: Input ( \"World\" ~ name )"),
+        trail.contains("/hail: Begin ( \"World\" ~ name )"),
         "trail was:\n{}",
         trail
     );
@@ -3361,4 +3362,80 @@ sweep(regions) : [Region] -> ()
         })
         .collect();
     assert_eq!(acquired, vec![(Some("regions"), Some("[Region]"))]);
+}
+
+/// A procedure invoked once per item of a `foreach` records its steps at one
+/// lexical path for every invocation, so a resume cannot tell one instance's
+/// work from another's. Stop partway through the first towel, resume, and the
+/// second towel's steps must still be performed.
+#[test]
+fn resume_reenters_invoked_procedure_per_item() {
+    let source = r#"
+% technique v1
+
+launder_towels :
+
+    1.  Gather the towels { ["blue", "green"] ~ towels }
+    2.  { foreach towel in towels }
+        -   <dry_towel>(towel)
+
+dry_towel(towel) : Towel -> ()
+
+    1.  Hang { towel } on the line
+    2.  Wait for the sun
+        "#
+    .trim_ascii();
+    let document = parsing::parse(Path::new("Test.tq"), source).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let first = {
+        let mut runner = Runner::new(
+            &program,
+            Appender::memory(),
+            HashMap::new(),
+            Scripted::new([("/dry_towel:/2".to_string(), UserInput::Quit)]),
+            Library::stub(),
+        );
+        let _ = runner.run(Environment::new());
+        runner
+            .into_appender()
+            .contents()
+            .to_string()
+    };
+
+    let mut completed = HashMap::new();
+    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+        match record.state {
+            State::Done(value) => {
+                completed.insert(record.path, value.unwrap_or(Value::Unitus));
+            }
+            State::Skip | State::Fail(_) => {
+                completed.insert(record.path, Value::Unitus);
+            }
+            _ => {}
+        }
+    }
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        completed,
+        Scripted::new([]),
+        Library::stub(),
+    );
+    let _ = runner.run(Environment::new());
+    let second = runner
+        .into_appender()
+        .contents()
+        .to_string();
+
+    let begins = second
+        .lines()
+        .filter(|line| line.contains("/dry_towel:/1 Begin"))
+        .count();
+    assert_eq!(
+        begins, 1,
+        "the second towel's first step must be performed on resume"
+    );
 }

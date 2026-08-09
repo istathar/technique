@@ -10,6 +10,8 @@
 //! `Batch` takes the body's value unattended). `Interface` composes the two.
 //! `Mock` is for testing.
 
+#[cfg(test)]
+use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -573,6 +575,105 @@ impl Verdict for Batch {
     }
 }
 
+/// Gives a prepared verdict at named steps; every other step is answered as
+/// `Batch` answers it. A step is given its verdict the first time it is
+/// reached, so a step reached again is answered unattended. For tests.
+#[cfg(test)]
+pub struct Script {
+    answers: HashMap<String, UserInput>,
+}
+
+#[cfg(test)]
+impl Script {
+    pub fn new<I: IntoIterator<Item = (String, UserInput)>>(answers: I) -> Self {
+        Script {
+            answers: answers
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Verdict for Script {
+    fn ask<O: Output>(
+        &mut self,
+        out: &mut O,
+        qualified: &str,
+        choices: &[&str],
+        produced: Value,
+        kind: Kind,
+    ) -> UserInput {
+        match self
+            .answers
+            .remove(qualified)
+        {
+            Some(input) => input,
+            None => Batch.ask(out, qualified, choices, produced, kind),
+        }
+    }
+
+    fn seal<O: Output>(
+        &mut self,
+        out: &mut O,
+        qualified: &str,
+        produced: Value,
+        kind: Kind,
+    ) -> UserInput {
+        match self
+            .answers
+            .remove(qualified)
+        {
+            Some(input) => input,
+            None => Batch.seal(out, qualified, produced, kind),
+        }
+    }
+
+    fn command<O: Output>(&mut self, out: &mut O, qualified: &str, script: &str) -> UserInput {
+        Batch.command(out, qualified, script)
+    }
+
+    fn action<O: Output>(
+        &mut self,
+        out: &mut O,
+        qualified: &str,
+        name: &str,
+        verb: &str,
+        value: &Value,
+    ) -> UserInput {
+        Batch.action(out, qualified, name, verb, value)
+    }
+
+    fn acquire<O: Output>(
+        &mut self,
+        out: &mut O,
+        qualified: &str,
+        text: &str,
+        name: Option<&str>,
+        forma: Option<&str>,
+    ) -> UserInput {
+        Batch.acquire(out, qualified, text, name, forma)
+    }
+
+    fn depart<O: Output>(&mut self, out: &mut O, qualified: &str, text: &str) -> UserInput {
+        Batch.depart(out, qualified, text)
+    }
+
+    fn external<O: Output>(&mut self, out: &mut O, qualified: &str) -> UserInput {
+        Batch.external(out, qualified)
+    }
+
+    fn overrule<O: Output>(
+        &mut self,
+        out: &mut O,
+        qualified: &str,
+        marker: &str,
+        standing: Standing,
+    ) -> UserInput {
+        Batch.overrule(out, qualified, marker, standing)
+    }
+}
+
 /// A `Driver` built from an `Output` and a `Verdict`: presentation calls go
 /// to the output, verdict calls go to the verdict policy, both of which are
 /// then passed the output so it can prompt with them.
@@ -686,6 +787,11 @@ pub type Automatic<W = io::Stdout> = Interface<Visual<W>, Batch>;
 /// process's output the only thing written to the terminal.
 pub type Headless = Interface<Silent, Batch>;
 
+/// As `Headless`, but taking prepared verdicts from a `Script`. Lets a test
+/// stop a run partway, or answer one step differently, without a terminal.
+#[cfg(test)]
+pub type Scripted = Interface<Silent, Script>;
+
 impl Console<io::Stdout> {
     pub fn new() -> Self {
         Interface {
@@ -748,6 +854,18 @@ impl Headless {
                 discard: io::sink(),
             },
             verdict: Batch,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Scripted {
+    pub fn new<I: IntoIterator<Item = (String, UserInput)>>(answers: I) -> Self {
+        Interface {
+            out: Silent {
+                discard: io::sink(),
+            },
+            verdict: Script::new(answers),
         }
     }
 }
