@@ -218,14 +218,18 @@ impl<'i, D: Driver> Runner<'i, D> {
         if let Some(name) = name {
             self.path
                 .push(PathSegment::Procedure(name));
-            let qualified = self
-                .path
-                .render();
-            let params = entry
-                .parameters
-                .unwrap_or(&[]);
-            let supplied = self.restore_or_collect_inputs(&mut env, &qualified, params)?;
-            self.begin_scope(&qualified, supplied)?;
+        }
+        // An anonymous entry — a document that is a bare series of steps — has
+        // no procedure segment, so it brackets itself at the root path.
+        let qualified = self
+            .path
+            .render();
+        let params = entry
+            .parameters
+            .unwrap_or(&[]);
+        let supplied = self.restore_or_collect_inputs(&mut env, &qualified, params)?;
+        self.begin_scope(&qualified, supplied)?;
+        if let Some(name) = name {
             if params.is_empty() {
                 self.driver
                     .enter(&qualified, "");
@@ -266,29 +270,22 @@ impl<'i, D: Driver> Runner<'i, D> {
             }
         }
         let result = self.walk(&mut env, &entry.body);
-        // A named entry procedure is a structural scope: a completed run closes
-        // with a final closing prompt at its path. A Quit or error walk skips
-        // it — the run did not finish. An anonymous entry (a bare series of
-        // steps) has no procedure to accept, so it just ends.
-        let result = if name.is_some() {
-            let qualified = self
-                .path
-                .render();
-            let kind = self.kind_of_scope(&entry.body);
-            let sealed = match result {
-                Ok(Conclusion::Stopping) => Ok(Conclusion::Stopping),
-                Ok(Conclusion::Completed(outcome)) => self.seal_scope(&qualified, outcome, kind),
-                Ok(Conclusion::Throwing(failure)) => {
-                    self.seal_scope(&qualified, Outcome::Fail(failure), kind)
-                }
-                Err(error) => Err(error),
-            };
+        // The entry is a structural scope: a completed run closes with a final
+        // closing prompt at its path. A Quit or error walk skips it — the run
+        // did not finish.
+        let kind = self.kind_of_scope(&entry.body);
+        let result = match result {
+            Ok(Conclusion::Stopping) => Ok(Conclusion::Stopping),
+            Ok(Conclusion::Completed(outcome)) => self.seal_scope(&qualified, outcome, kind),
+            Ok(Conclusion::Throwing(failure)) => {
+                self.seal_scope(&qualified, Outcome::Fail(failure), kind)
+            }
+            Err(error) => Err(error),
+        };
+        if name.is_some() {
             self.path
                 .pop();
-            sealed
-        } else {
-            result
-        };
+        }
         // A run that walked to its end closes with a `Finish` record at the
         // root and the double arrow marker.
         if let Ok(conclusion) = &result {

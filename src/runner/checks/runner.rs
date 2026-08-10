@@ -156,16 +156,17 @@ fn step_outcomes_recorded() {
                 .is_empty()
         })
         .collect();
-    // Start + Begin + Done + Finish — four lines.
-    assert_eq!(lines.len(), 4);
+    // Start + the entry scope's Begin + the step's Begin and Done + the entry
+    // scope's Done + Finish — six lines.
+    assert_eq!(lines.len(), 6);
     assert_eq!(
         lines[0],
         "2026-05-16T00:00:00Z 000001 / Start file:///tmp/Test.tq"
     );
-    let begin = parse_record(lines[1]).expect("parse begin");
+    let begin = parse_record(lines[2]).expect("parse begin");
     assert_eq!(begin.path, "/1");
     assert_eq!(begin.state, State::Begin(Vec::new()));
-    let record = parse_record(lines[2]).expect("parse record");
+    let record = parse_record(lines[3]).expect("parse record");
     assert_eq!(record.path, "/1");
     let State::Done(_) = record.state else {
         panic!("expected Done, got {:?}", record.state);
@@ -201,8 +202,8 @@ fn step_outcomes_recorded() {
                 .is_empty()
         })
         .collect();
-    // lines[1] is the Begin; lines[2] is the Skip outcome.
-    let record = parse_record(lines[2]).expect("parse record");
+    // lines[2] is the step's Begin; lines[3] is its Skip outcome.
+    let record = parse_record(lines[3]).expect("parse record");
     assert_eq!(record.state, State::Skip);
 
     let mut fixture = StoreFixture::new("step-fail");
@@ -235,8 +236,8 @@ fn step_outcomes_recorded() {
                 .is_empty()
         })
         .collect();
-    // lines[1] is the Begin; lines[2] is the Fail outcome.
-    let record = parse_record(lines[2]).expect("parse record");
+    // lines[2] is the step's Begin; lines[3] is its Fail outcome.
+    let record = parse_record(lines[3]).expect("parse record");
     assert_eq!(
         record.state,
         State::Fail(Some(Value::Tabularum(vec![(
@@ -279,7 +280,7 @@ fn empty_fail_reason_records_none() {
                 .is_empty()
         })
         .collect();
-    let record = parse_record(lines[2]).expect("parse record");
+    let record = parse_record(lines[3]).expect("parse record");
     assert_eq!(record.state, State::Fail(None));
 }
 
@@ -489,10 +490,11 @@ fn quit_propagates_and_stops_walking() {
                 .is_empty()
         })
         .collect();
-    assert_eq!(lines.len(), 3);
+    assert_eq!(lines.len(), 4);
     assert!(lines[0].contains(" Start "));
-    assert!(lines[1].ends_with(" Begin ()"));
-    assert!(lines[2].ends_with(" / Stop"));
+    assert!(lines[1].ends_with(" / Begin ()"));
+    assert!(lines[2].ends_with(" Begin ()"));
+    assert!(lines[3].ends_with(" / Stop"));
 }
 
 #[test]
@@ -562,7 +564,7 @@ fn section_walking() {
         })
         .collect();
     assert_eq!(section_numerals, vec!["I"]);
-    assert_eq!(section_fqns, vec!["/I"]);
+    assert_eq!(section_fqns, vec!["/I", "/"]);
     assert_eq!(step_fqns, vec!["/I/1"]);
 
     let mut fixture = StoreFixture::new("section-with-title");
@@ -1564,11 +1566,11 @@ fn loop_inside_step_produces_one_result() {
                 .is_empty()
         })
         .collect();
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 6);
     // The step reads the collection its Loop iterates, so its Begin states it.
-    assert!(lines[1].ends_with(" Begin ( [] ~ empty )"), "{}", lines[1]);
-    assert!(lines[2].contains(" Done"));
-    assert!(lines[3].ends_with(" Finish"));
+    assert!(lines[2].ends_with(" Begin ( [] ~ empty )"), "{}", lines[2]);
+    assert!(lines[3].contains(" Done"));
+    assert!(lines[5].ends_with(" Finish"));
 }
 
 #[test]
@@ -2573,7 +2575,7 @@ fn automatic_records_done_for_computable_step_skip_for_prose() {
                     .is_empty()
             })
             .collect();
-        let state = parse_record(lines[2])
+        let state = parse_record(lines[3])
             .expect("parse record")
             .state;
         (outcome, state)
@@ -2671,7 +2673,7 @@ fn sequence_value_is_last_member() {
             }
         })
         .count();
-    assert_eq!(dones, 2);
+    assert_eq!(dones, 3);
 }
 
 #[test]
