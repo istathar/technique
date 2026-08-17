@@ -1,43 +1,22 @@
-# NetworkProbe.tq, the trail of run 000130 interrupted at the live prompt
-# /connectivity_check:/VII/service_endpoint:/2, which has Begun but not settled.
+# Every record of run 000181 of NetworkProbe.tq, interrupted at the live prompt
+# /connectivity_check:/VII/service_endpoint:/2, against all six keys. Blocks are
+# in trail order. A record is named by its FQP and verb, matching the .pfftt
+# beside this file with the timestamp, run id, and payload elided; (live) is the
+# prompt the run is waiting at, and (refused) is a keystroke that does not move.
 #
-# A record is one line of the .pfftt trail, named here by its FQP and verb; the
-# timestamp, run id, and arguments are elided. Blocks are in trail order, so Up
-# and Down are the previous and next block. (live) is the prompt the run is
-# waiting at, which sits immediately after the last record.
-#
-#   Up          immediate previous record; from (live), the last record
-#   Down        immediate next record; from the last record, (live)
-#   Left        out to the enclosing scope, landing on its Begin
-#   Right       in to the first scope enclosed, landing on its Begin
-#   PageUp      previous peer scope; from a settle (Done, Skip) to that peer's
-#               settle, or its Begin if it has not settled; from any other
-#               record to its Begin
-#   PageDown    next peer scope, the same way
-#
-# The enclosing scope is where the walk came from, not where the FQP sits. A
-# procedure is enclosed by the step that invoked it, so away_network:/2 encloses
-# check_aws_health: even though the two are path siblings under VI.
-#
-# (refused) means the keystroke does not move.
+# The motions are described in src/engraving/navigation.rs; this table is the
+# authority where that prose is ambiguous.
 #
 # origin                                            key         destination
 
 / Start                                             Up          (refused)
-/ Start                                             Down        /connectivity_check: Input
+/ Start                                             Down        /connectivity_check: Begin
 / Start                                             Left        (refused)
 / Start                                             Right       /connectivity_check: Begin
 / Start                                             PageUp      (refused)
 / Start                                             PageDown    (refused)
 
-/connectivity_check: Input                          Up          / Start
-/connectivity_check: Input                          Down        /connectivity_check: Begin
-/connectivity_check: Input                          Left        / Start
-/connectivity_check: Input                          Right       /connectivity_check:/I Begin
-/connectivity_check: Input                          PageUp      (refused)
-/connectivity_check: Input                          PageDown    (refused)
-
-/connectivity_check: Begin                          Up          /connectivity_check: Input
+/connectivity_check: Begin                          Up          / Start
 /connectivity_check: Begin                          Down        /connectivity_check:/I Begin
 /connectivity_check: Begin                          Left        / Start
 /connectivity_check: Begin                          Right       /connectivity_check:/I Begin
@@ -493,20 +472,13 @@
 /connectivity_check:/VII Begin                      PageDown    (refused)
 
 /connectivity_check:/VII Invoke                     Up          /connectivity_check:/VII Begin
-/connectivity_check:/VII Invoke                     Down        /connectivity_check:/VII/service_endpoint: Input
+/connectivity_check:/VII Invoke                     Down        /connectivity_check:/VII/service_endpoint: Begin
 /connectivity_check:/VII Invoke                     Left        /connectivity_check: Begin
 /connectivity_check:/VII Invoke                     Right       /connectivity_check:/VII/service_endpoint: Begin
 /connectivity_check:/VII Invoke                     PageUp      /connectivity_check:/VI Begin
 /connectivity_check:/VII Invoke                     PageDown    (refused)
 
-/connectivity_check:/VII/service_endpoint: Input    Up          /connectivity_check:/VII Invoke
-/connectivity_check:/VII/service_endpoint: Input    Down        /connectivity_check:/VII/service_endpoint: Begin
-/connectivity_check:/VII/service_endpoint: Input    Left        /connectivity_check:/VII Begin
-/connectivity_check:/VII/service_endpoint: Input    Right       /connectivity_check:/VII/service_endpoint:/1 Begin
-/connectivity_check:/VII/service_endpoint: Input    PageUp      (refused)
-/connectivity_check:/VII/service_endpoint: Input    PageDown    (refused)
-
-/connectivity_check:/VII/service_endpoint: Begin    Up          /connectivity_check:/VII/service_endpoint: Input
+/connectivity_check:/VII/service_endpoint: Begin    Up          /connectivity_check:/VII Invoke
 /connectivity_check:/VII/service_endpoint: Begin    Down        /connectivity_check:/VII/service_endpoint:/1 Begin
 /connectivity_check:/VII/service_endpoint: Begin    Left        /connectivity_check:/VII Begin
 /connectivity_check:/VII/service_endpoint: Begin    Right       /connectivity_check:/VII/service_endpoint:/1 Begin
