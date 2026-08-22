@@ -67,7 +67,7 @@
 
 /connectivity_check:/I/local_network:/1 Done        Up          /connectivity_check:/I/local_network:/1 Return
 /connectivity_check:/I/local_network:/1 Done        Down        /connectivity_check:/I/local_network:/2 Begin
-/connectivity_check:/I/local_network:/1 Done        Left        /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I/local_network:/1 Done        Left        /connectivity_check:/I/local_network: Done
 /connectivity_check:/I/local_network:/1 Done        Right       (refused)
 /connectivity_check:/I/local_network:/1 Done        PageUp      (refused)
 /connectivity_check:/I/local_network:/1 Done        PageDown    /connectivity_check:/I/local_network:/2 Done
@@ -81,7 +81,7 @@
 
 /connectivity_check:/I/local_network:/2 Done        Up          /connectivity_check:/I/local_network:/2 Begin
 /connectivity_check:/I/local_network:/2 Done        Down        /connectivity_check:/I/local_network:/3 Begin
-/connectivity_check:/I/local_network:/2 Done        Left        /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I/local_network:/2 Done        Left        /connectivity_check:/I/local_network: Done
 /connectivity_check:/I/local_network:/2 Done        Right       (refused)
 /connectivity_check:/I/local_network:/2 Done        PageUp      /connectivity_check:/I/local_network:/1 Done
 /connectivity_check:/I/local_network:/2 Done        PageDown    /connectivity_check:/I/local_network:/3 Done
@@ -95,7 +95,7 @@
 
 /connectivity_check:/I/local_network:/3 Done        Up          /connectivity_check:/I/local_network:/3 Begin
 /connectivity_check:/I/local_network:/3 Done        Down        /connectivity_check:/I/local_network:/4 Begin
-/connectivity_check:/I/local_network:/3 Done        Left        /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I/local_network:/3 Done        Left        /connectivity_check:/I/local_network: Done
 /connectivity_check:/I/local_network:/3 Done        Right       (refused)
 /connectivity_check:/I/local_network:/3 Done        PageUp      /connectivity_check:/I/local_network:/2 Done
 /connectivity_check:/I/local_network:/3 Done        PageDown    /connectivity_check:/I/local_network:/4 Done
@@ -109,7 +109,7 @@
 
 /connectivity_check:/I/local_network:/4 Done        Up          /connectivity_check:/I/local_network:/4 Begin
 /connectivity_check:/I/local_network:/4 Done        Down        /connectivity_check:/I/local_network:/5 Begin
-/connectivity_check:/I/local_network:/4 Done        Left        /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I/local_network:/4 Done        Left        /connectivity_check:/I/local_network: Done
 /connectivity_check:/I/local_network:/4 Done        Right       (refused)
 /connectivity_check:/I/local_network:/4 Done        PageUp      /connectivity_check:/I/local_network:/3 Done
 /connectivity_check:/I/local_network:/4 Done        PageDown    /connectivity_check:/I/local_network:/5 Done
@@ -123,22 +123,22 @@
 
 /connectivity_check:/I/local_network:/5 Done        Up          /connectivity_check:/I/local_network:/5 Begin
 /connectivity_check:/I/local_network:/5 Done        Down        /connectivity_check:/I/local_network: Done
-/connectivity_check:/I/local_network:/5 Done        Left        /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I/local_network:/5 Done        Left        /connectivity_check:/I/local_network: Done
 /connectivity_check:/I/local_network:/5 Done        Right       (refused)
 /connectivity_check:/I/local_network:/5 Done        PageUp      /connectivity_check:/I/local_network:/4 Done
 /connectivity_check:/I/local_network:/5 Done        PageDown    (refused)
 
 /connectivity_check:/I/local_network: Done          Up          /connectivity_check:/I/local_network:/5 Done
 /connectivity_check:/I/local_network: Done          Down        /connectivity_check:/I Done
-/connectivity_check:/I/local_network: Done          Left        /connectivity_check:/I Begin
-/connectivity_check:/I/local_network: Done          Right       /connectivity_check:/I/local_network:/1 Begin
+/connectivity_check:/I/local_network: Done          Left        /connectivity_check:/I Done
+/connectivity_check:/I/local_network: Done          Right       /connectivity_check:/I/local_network:/5 Done
 /connectivity_check:/I/local_network: Done          PageUp      (refused)
 /connectivity_check:/I/local_network: Done          PageDown    (refused)
 
 /connectivity_check:/I Done                         Up          /connectivity_check:/I/local_network: Done
 /connectivity_check:/I Done                         Down        /connectivity_check:/II Begin
 /connectivity_check:/I Done                         Left        /connectivity_check: Begin
-/connectivity_check:/I Done                         Right       /connectivity_check:/I/local_network: Begin
+/connectivity_check:/I Done                         Right       /connectivity_check:/I/local_network: Done
 /connectivity_check:/I Done                         PageUp      (refused)
 /connectivity_check:/I Done                         PageDown    /connectivity_check:/II Done
 
@@ -172,22 +172,22 @@
 
 /connectivity_check:/II/home_border:/1 Done         Up          /connectivity_check:/II/home_border:/1 Begin
 /connectivity_check:/II/home_border:/1 Done         Down        /connectivity_check:/II/home_border: Done
-/connectivity_check:/II/home_border:/1 Done         Left        /connectivity_check:/II/home_border: Begin
+/connectivity_check:/II/home_border:/1 Done         Left        /connectivity_check:/II/home_border: Done
 /connectivity_check:/II/home_border:/1 Done         Right       (refused)
 /connectivity_check:/II/home_border:/1 Done         PageUp      (refused)
 /connectivity_check:/II/home_border:/1 Done         PageDown    (refused)
 
 /connectivity_check:/II/home_border: Done           Up          /connectivity_check:/II/home_border:/1 Done
 /connectivity_check:/II/home_border: Done           Down        /connectivity_check:/II Done
-/connectivity_check:/II/home_border: Done           Left        /connectivity_check:/II Begin
-/connectivity_check:/II/home_border: Done           Right       /connectivity_check:/II/home_border:/1 Begin
+/connectivity_check:/II/home_border: Done           Left        /connectivity_check:/II Done
+/connectivity_check:/II/home_border: Done           Right       /connectivity_check:/II/home_border:/1 Done
 /connectivity_check:/II/home_border: Done           PageUp      (refused)
 /connectivity_check:/II/home_border: Done           PageDown    (refused)
 
 /connectivity_check:/II Done                        Up          /connectivity_check:/II/home_border: Done
 /connectivity_check:/II Done                        Down        /connectivity_check:/III Begin
 /connectivity_check:/II Done                        Left        /connectivity_check: Begin
-/connectivity_check:/II Done                        Right       /connectivity_check:/II/home_border: Begin
+/connectivity_check:/II Done                        Right       /connectivity_check:/II/home_border: Done
 /connectivity_check:/II Done                        PageUp      /connectivity_check:/I Done
 /connectivity_check:/II Done                        PageDown    /connectivity_check:/III Done
 
@@ -221,7 +221,7 @@
 
 /connectivity_check:/III/public_network:/1 Done     Up          /connectivity_check:/III/public_network:/1 Begin
 /connectivity_check:/III/public_network:/1 Done     Down        /connectivity_check:/III/public_network:/2 Begin
-/connectivity_check:/III/public_network:/1 Done     Left        /connectivity_check:/III/public_network: Begin
+/connectivity_check:/III/public_network:/1 Done     Left        /connectivity_check:/III/public_network: Done
 /connectivity_check:/III/public_network:/1 Done     Right       (refused)
 /connectivity_check:/III/public_network:/1 Done     PageUp      (refused)
 /connectivity_check:/III/public_network:/1 Done     PageDown    /connectivity_check:/III/public_network:/2 Skip
@@ -235,7 +235,7 @@
 
 /connectivity_check:/III/public_network:/2 Skip     Up          /connectivity_check:/III/public_network:/2 Begin
 /connectivity_check:/III/public_network:/2 Skip     Down        /connectivity_check:/III/public_network:/3 Begin
-/connectivity_check:/III/public_network:/2 Skip     Left        /connectivity_check:/III/public_network: Begin
+/connectivity_check:/III/public_network:/2 Skip     Left        /connectivity_check:/III/public_network: Done
 /connectivity_check:/III/public_network:/2 Skip     Right       (refused)
 /connectivity_check:/III/public_network:/2 Skip     PageUp      /connectivity_check:/III/public_network:/1 Done
 /connectivity_check:/III/public_network:/2 Skip     PageDown    /connectivity_check:/III/public_network:/3 Done
@@ -249,22 +249,22 @@
 
 /connectivity_check:/III/public_network:/3 Done     Up          /connectivity_check:/III/public_network:/3 Begin
 /connectivity_check:/III/public_network:/3 Done     Down        /connectivity_check:/III/public_network: Done
-/connectivity_check:/III/public_network:/3 Done     Left        /connectivity_check:/III/public_network: Begin
+/connectivity_check:/III/public_network:/3 Done     Left        /connectivity_check:/III/public_network: Done
 /connectivity_check:/III/public_network:/3 Done     Right       (refused)
 /connectivity_check:/III/public_network:/3 Done     PageUp      /connectivity_check:/III/public_network:/2 Skip
 /connectivity_check:/III/public_network:/3 Done     PageDown    (refused)
 
 /connectivity_check:/III/public_network: Done       Up          /connectivity_check:/III/public_network:/3 Done
 /connectivity_check:/III/public_network: Done       Down        /connectivity_check:/III Done
-/connectivity_check:/III/public_network: Done       Left        /connectivity_check:/III Begin
-/connectivity_check:/III/public_network: Done       Right       /connectivity_check:/III/public_network:/1 Begin
+/connectivity_check:/III/public_network: Done       Left        /connectivity_check:/III Done
+/connectivity_check:/III/public_network: Done       Right       /connectivity_check:/III/public_network:/3 Done
 /connectivity_check:/III/public_network: Done       PageUp      (refused)
 /connectivity_check:/III/public_network: Done       PageDown    (refused)
 
 /connectivity_check:/III Done                       Up          /connectivity_check:/III/public_network: Done
 /connectivity_check:/III Done                       Down        /connectivity_check:/IV Begin
 /connectivity_check:/III Done                       Left        /connectivity_check: Begin
-/connectivity_check:/III Done                       Right       /connectivity_check:/III/public_network: Begin
+/connectivity_check:/III Done                       Right       /connectivity_check:/III/public_network: Done
 /connectivity_check:/III Done                       PageUp      /connectivity_check:/II Done
 /connectivity_check:/III Done                       PageDown    /connectivity_check:/IV Done
 
@@ -298,7 +298,7 @@
 
 /connectivity_check:/IV/overlay_network:/1 Done     Up          /connectivity_check:/IV/overlay_network:/1 Begin
 /connectivity_check:/IV/overlay_network:/1 Done     Down        /connectivity_check:/IV/overlay_network:/2 Begin
-/connectivity_check:/IV/overlay_network:/1 Done     Left        /connectivity_check:/IV/overlay_network: Begin
+/connectivity_check:/IV/overlay_network:/1 Done     Left        /connectivity_check:/IV/overlay_network: Done
 /connectivity_check:/IV/overlay_network:/1 Done     Right       (refused)
 /connectivity_check:/IV/overlay_network:/1 Done     PageUp      (refused)
 /connectivity_check:/IV/overlay_network:/1 Done     PageDown    /connectivity_check:/IV/overlay_network:/2 Skip
@@ -312,22 +312,22 @@
 
 /connectivity_check:/IV/overlay_network:/2 Skip     Up          /connectivity_check:/IV/overlay_network:/2 Begin
 /connectivity_check:/IV/overlay_network:/2 Skip     Down        /connectivity_check:/IV/overlay_network: Done
-/connectivity_check:/IV/overlay_network:/2 Skip     Left        /connectivity_check:/IV/overlay_network: Begin
+/connectivity_check:/IV/overlay_network:/2 Skip     Left        /connectivity_check:/IV/overlay_network: Done
 /connectivity_check:/IV/overlay_network:/2 Skip     Right       (refused)
 /connectivity_check:/IV/overlay_network:/2 Skip     PageUp      /connectivity_check:/IV/overlay_network:/1 Done
 /connectivity_check:/IV/overlay_network:/2 Skip     PageDown    (refused)
 
 /connectivity_check:/IV/overlay_network: Done       Up          /connectivity_check:/IV/overlay_network:/2 Skip
 /connectivity_check:/IV/overlay_network: Done       Down        /connectivity_check:/IV Done
-/connectivity_check:/IV/overlay_network: Done       Left        /connectivity_check:/IV Begin
-/connectivity_check:/IV/overlay_network: Done       Right       /connectivity_check:/IV/overlay_network:/1 Begin
+/connectivity_check:/IV/overlay_network: Done       Left        /connectivity_check:/IV Done
+/connectivity_check:/IV/overlay_network: Done       Right       /connectivity_check:/IV/overlay_network:/2 Skip
 /connectivity_check:/IV/overlay_network: Done       PageUp      (refused)
 /connectivity_check:/IV/overlay_network: Done       PageDown    (refused)
 
 /connectivity_check:/IV Done                        Up          /connectivity_check:/IV/overlay_network: Done
 /connectivity_check:/IV Done                        Down        /connectivity_check:/V Begin
 /connectivity_check:/IV Done                        Left        /connectivity_check: Begin
-/connectivity_check:/IV Done                        Right       /connectivity_check:/IV/overlay_network: Begin
+/connectivity_check:/IV Done                        Right       /connectivity_check:/IV/overlay_network: Done
 /connectivity_check:/IV Done                        PageUp      /connectivity_check:/III Done
 /connectivity_check:/IV Done                        PageDown    /connectivity_check:/V Done
 
@@ -361,22 +361,22 @@
 
 /connectivity_check:/V/away_border:/1 Done          Up          /connectivity_check:/V/away_border:/1 Begin
 /connectivity_check:/V/away_border:/1 Done          Down        /connectivity_check:/V/away_border: Done
-/connectivity_check:/V/away_border:/1 Done          Left        /connectivity_check:/V/away_border: Begin
+/connectivity_check:/V/away_border:/1 Done          Left        /connectivity_check:/V/away_border: Done
 /connectivity_check:/V/away_border:/1 Done          Right       (refused)
 /connectivity_check:/V/away_border:/1 Done          PageUp      (refused)
 /connectivity_check:/V/away_border:/1 Done          PageDown    (refused)
 
 /connectivity_check:/V/away_border: Done            Up          /connectivity_check:/V/away_border:/1 Done
 /connectivity_check:/V/away_border: Done            Down        /connectivity_check:/V Done
-/connectivity_check:/V/away_border: Done            Left        /connectivity_check:/V Begin
-/connectivity_check:/V/away_border: Done            Right       /connectivity_check:/V/away_border:/1 Begin
+/connectivity_check:/V/away_border: Done            Left        /connectivity_check:/V Done
+/connectivity_check:/V/away_border: Done            Right       /connectivity_check:/V/away_border:/1 Done
 /connectivity_check:/V/away_border: Done            PageUp      (refused)
 /connectivity_check:/V/away_border: Done            PageDown    (refused)
 
 /connectivity_check:/V Done                         Up          /connectivity_check:/V/away_border: Done
 /connectivity_check:/V Done                         Down        /connectivity_check:/VI Begin
 /connectivity_check:/V Done                         Left        /connectivity_check: Begin
-/connectivity_check:/V Done                         Right       /connectivity_check:/V/away_border: Begin
+/connectivity_check:/V Done                         Right       /connectivity_check:/V/away_border: Done
 /connectivity_check:/V Done                         PageUp      /connectivity_check:/IV Done
 /connectivity_check:/V Done                         PageDown    /connectivity_check:/VI Done
 
@@ -410,7 +410,7 @@
 
 /connectivity_check:/VI/away_network:/1 Done        Up          /connectivity_check:/VI/away_network:/1 Begin
 /connectivity_check:/VI/away_network:/1 Done        Down        /connectivity_check:/VI/away_network:/2 Begin
-/connectivity_check:/VI/away_network:/1 Done        Left        /connectivity_check:/VI/away_network: Begin
+/connectivity_check:/VI/away_network:/1 Done        Left        /connectivity_check:/VI/away_network: Done
 /connectivity_check:/VI/away_network:/1 Done        Right       (refused)
 /connectivity_check:/VI/away_network:/1 Done        PageUp      (refused)
 /connectivity_check:/VI/away_network:/1 Done        PageDown    /connectivity_check:/VI/away_network:/2 Done
@@ -438,29 +438,29 @@
 
 /connectivity_check:/VI/check_aws_health: Done      Up          /connectivity_check:/VI/check_aws_health: Begin
 /connectivity_check:/VI/check_aws_health: Done      Down        /connectivity_check:/VI/away_network:/2 Done
-/connectivity_check:/VI/check_aws_health: Done      Left        /connectivity_check:/VI/away_network:/2 Begin
+/connectivity_check:/VI/check_aws_health: Done      Left        /connectivity_check:/VI/away_network:/2 Done
 /connectivity_check:/VI/check_aws_health: Done      Right       (refused)
 /connectivity_check:/VI/check_aws_health: Done      PageUp      (refused)
 /connectivity_check:/VI/check_aws_health: Done      PageDown    (refused)
 
 /connectivity_check:/VI/away_network:/2 Done        Up          /connectivity_check:/VI/check_aws_health: Done
 /connectivity_check:/VI/away_network:/2 Done        Down        /connectivity_check:/VI/away_network: Done
-/connectivity_check:/VI/away_network:/2 Done        Left        /connectivity_check:/VI/away_network: Begin
-/connectivity_check:/VI/away_network:/2 Done        Right       /connectivity_check:/VI/check_aws_health: Begin
+/connectivity_check:/VI/away_network:/2 Done        Left        /connectivity_check:/VI/away_network: Done
+/connectivity_check:/VI/away_network:/2 Done        Right       /connectivity_check:/VI/check_aws_health: Done
 /connectivity_check:/VI/away_network:/2 Done        PageUp      /connectivity_check:/VI/away_network:/1 Done
 /connectivity_check:/VI/away_network:/2 Done        PageDown    (refused)
 
 /connectivity_check:/VI/away_network: Done          Up          /connectivity_check:/VI/away_network:/2 Done
 /connectivity_check:/VI/away_network: Done          Down        /connectivity_check:/VI Done
-/connectivity_check:/VI/away_network: Done          Left        /connectivity_check:/VI Begin
-/connectivity_check:/VI/away_network: Done          Right       /connectivity_check:/VI/away_network:/1 Begin
+/connectivity_check:/VI/away_network: Done          Left        /connectivity_check:/VI Done
+/connectivity_check:/VI/away_network: Done          Right       /connectivity_check:/VI/away_network:/2 Done
 /connectivity_check:/VI/away_network: Done          PageUp      (refused)
 /connectivity_check:/VI/away_network: Done          PageDown    (refused)
 
 /connectivity_check:/VI Done                        Up          /connectivity_check:/VI/away_network: Done
 /connectivity_check:/VI Done                        Down        /connectivity_check:/VII Begin
 /connectivity_check:/VI Done                        Left        /connectivity_check: Begin
-/connectivity_check:/VI Done                        Right       /connectivity_check:/VI/away_network: Begin
+/connectivity_check:/VI Done                        Right       /connectivity_check:/VI/away_network: Done
 /connectivity_check:/VI Done                        PageUp      /connectivity_check:/V Done
 /connectivity_check:/VI Done                        PageDown    /connectivity_check:/VII Begin
 
