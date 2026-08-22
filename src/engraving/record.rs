@@ -335,6 +335,9 @@ pub(crate) fn parse_record(line: &str) -> Result<Record, RecordError> {
     let run_text = parts
         .next()
         .ok_or(RecordError::MalformedRecord)?;
+    let serial_text = parts
+        .next()
+        .ok_or(RecordError::MalformedRecord)?;
     let path = parts
         .next()
         .ok_or(RecordError::MalformedRecord)?;
@@ -348,10 +351,15 @@ pub(crate) fn parse_record(line: &str) -> Result<Record, RecordError> {
         .parse::<u32>()
         .map(RunId)
         .map_err(|_| RecordError::MalformedRecord)?;
+    let serial = serial_text
+        .parse::<u32>()
+        .map(Serial)
+        .map_err(|_| RecordError::MalformedRecord)?;
     let state = parse_state(rest)?;
     Ok(Record {
         recorded: recorded.to_string(),
         run_id,
+        serial,
         path: path.to_string(),
         state,
     })
