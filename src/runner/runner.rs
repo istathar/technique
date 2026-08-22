@@ -1,14 +1,17 @@
 //! Interactive walker over a translated Program.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 
 use super::context::Context;
-use super::driver::{Driver, Kind, Standing, UserInput};
+use super::driver::{Driver, Kind, Offer, Question, Review, Standing, UserInput};
 use super::evaluator::Environment;
 use super::library::{Library, Nature};
 use super::path::{PathSegment, QualifiedPath};
-use crate::engraving::{Appender, InvokeTarget, Record, State, StoreError, Supplied};
+use crate::engraving::{
+    Appender, InvokeTarget, Ledger, Motion, Position, Record, Serial, State, StoreError, Supplied,
+    Trail,
+};
 use crate::language;
 use crate::program::{
     Executable, ExecutableRef, Fragment, Invocable, Locale, Operation, Ordinal, Program,
@@ -37,6 +40,11 @@ pub enum Conclusion {
     Completed(Outcome),
     Throwing(Failure),
     Stopping,
+    /// The user amended a recorded value. The walk unwinds without recording
+    /// anything, and the run starts again from the top, replaying what still
+    /// stands. Distinct from `Stopping`: it is not a stop, and it must not
+    /// write the `Stop` lifecycle record that a stop writes mid-unwind.
+    Restarting,
 }
 
 /// Why a Step failed.
@@ -112,10 +120,37 @@ impl From<StoreError> for RunnerError {
 pub struct Runner<'i, D: Driver> {
     program: &'i Program<'i>,
     appender: Appender,
-    completed: HashMap<String, Value>,
-    inputs: HashMap<String, Vec<Supplied>>,
+    ledger: Ledger,
     driver: D,
     path: QualifiedPath<'i>,
+    /// The scope the walk is standing in. Saved and restored around a descent
+    /// exactly as `path` is.
+    serial: Serial,
+    /// Scopes this walk has entered itself. A recorded completion short-circuits
+    /// a resume, but a scope the current walk just executed is not a prior
+    /// recording — two calls to one procedure from the same scope share a route,
+    /// and so an entry, yet both must run.
+    entered: HashSet<Serial>,
+    /// Bindings the current scope has made, flushed as its `Bind` record
+    /// immediately before its outcome.
+    bound: Vec<Supplied>,
+    /// What a revoked step recorded binding, kept so the acquire prompts in its
+    /// body open on the old value rather than an empty buffer. Taken before the
+    /// step's `Begin`, which overwrites the entry.
+    seeds: Vec<Supplied>,
+    /// Every record this run has written, in order, seeded from the trail on
+    /// resume. What review moves over. Never consulted to decide what to skip.
+    records: Vec<Record>,
+    /// The marker the next `Begin` belongs to, set by whichever path is about
+    /// to record it.
+    opening: &'static str,
+    /// A verdict chosen at a reviewed position, waiting for the replay to reach
+    /// it. Survives the restart, which is the whole point of it.
+    amending: Option<(Serial, UserInput)>,
+    /// How deep inside completed scopes the walk is replaying. While non-zero
+    /// it descends and displays but takes no prompt, writes no record, and
+    /// announces an `Execute` rather than dispatching it.
+    replaying: usize,
     constraints: Vec<Value>,
     library: Library,
     context: Context,
@@ -126,22 +161,37 @@ impl<'i, D: Driver> Runner<'i, D> {
     pub fn new(
         program: &'i Program<'i>,
         appender: Appender,
-        completed: HashMap<String, Value>,
+        ledger: Ledger,
         driver: D,
         library: Library,
     ) -> Self {
         Runner {
             program,
             appender,
-            completed,
-            inputs: HashMap::new(),
+            ledger,
             driver,
             path: QualifiedPath::new(),
+            serial: Serial::LIFECYCLE,
+            entered: HashSet::new(),
+            bound: Vec::new(),
+            seeds: Vec::new(),
+            records: Vec::new(),
+            opening: "\u{2198}",
+            amending: None,
+            replaying: 0,
             constraints: Vec::new(),
             library,
             context: Context::native(false),
             document: None,
         }
+    }
+
+    /// Seed the trail review moves over: on a resume, every record the run has
+    /// already written, so the walk can be looked back through as far as it
+    /// goes rather than only as far as this session reached.
+    pub fn with_records(mut self, records: Vec<Record>) -> Self {
+        self.records = records;
+        self
     }
 
     /// Name the source document so the run brackets its walk double arrow
@@ -151,18 +201,43 @@ impl<'i, D: Driver> Runner<'i, D> {
         self
     }
 
-    /// Seed the runner with the inputs recorded by a prior run — the values
-    /// supplied to the entry procedure and to each invocation — so a resume
-    /// restores them rather than re-prompting. Empty on a fresh run.
-    pub fn with_inputs(mut self, inputs: HashMap<String, Vec<Supplied>>) -> Self {
-        self.inputs = inputs;
-        self
-    }
-
     /// Override the host context builtins write through (default: the terminal).
     pub fn with_context(mut self, context: Context) -> Self {
         self.context = context;
         self
+    }
+
+    /// Rebuild the runner for a fresh walk from the top, after the user amended
+    /// a recorded value. What the process holds is kept — the driver's terminal
+    /// state, the open append handle, the library, the context, and the folded
+    /// ledger — and the position is reset.
+    ///
+    /// A restart rather than resuming at the amended step because the walker's
+    /// position is a Rust call stack plus an `Environment` of every binding made
+    /// along the way, and there is no way to construct that directly. Replaying
+    /// from the top rebuilds it, short-circuiting whatever still stands.
+    pub fn restart(self) -> Self {
+        Runner {
+            program: self.program,
+            appender: self.appender,
+            ledger: self.ledger,
+            driver: self.driver,
+            path: QualifiedPath::new(),
+            serial: Serial::LIFECYCLE,
+            entered: HashSet::new(),
+            bound: Vec::new(),
+            seeds: Vec::new(),
+            records: self.records,
+            opening: "\u{2198}",
+            // Carried across: it is the answer given in review, and the walk
+            // restarts precisely so it can be delivered.
+            amending: self.amending,
+            replaying: 0,
+            constraints: Vec::new(),
+            library: self.library,
+            context: self.context,
+            document: self.document,
+        }
     }
 
     /// Consume the runner and return the inner driver after a run completes.
@@ -228,7 +303,18 @@ impl<'i, D: Driver> Runner<'i, D> {
             .parameters
             .unwrap_or(&[]);
         let supplied = self.restore_or_collect_inputs(&mut env, &qualified, params)?;
-        self.begin_scope(&qualified, supplied)?;
+        // A run already sealed at its entry replays for display alone: beginning
+        // it again would state a second execution of the whole run and unsettle
+        // the outcome standing here. The walk from here down is a replay, so it
+        // takes no prompt and writes nothing — neither a `Done` of its own nor a
+        // second `Finish`.
+        match self.recall(&qualified, &supplied) {
+            Recall::Valid(serial, ..) => {
+                self.enter_replayed(serial);
+                self.replaying += 1;
+            }
+            _ => self.begin_scope(&qualified, supplied)?,
+        }
         if let Some(name) = name {
             if params.is_empty() {
                 self.driver
@@ -276,6 +362,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         let kind = self.kind_of_scope(&entry.body);
         let result = match result {
             Ok(Conclusion::Stopping) => Ok(Conclusion::Stopping),
+            Ok(Conclusion::Restarting) => Ok(Conclusion::Restarting),
             Ok(Conclusion::Completed(outcome)) => self.seal_scope(&qualified, outcome, kind),
             Ok(Conclusion::Throwing(failure)) => {
                 self.seal_scope(&qualified, Outcome::Fail(failure), kind)
@@ -289,7 +376,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         // A run that walked to its end closes with a `Finish` record at the
         // root and the double arrow marker.
         if let Ok(conclusion) = &result {
-            if let Conclusion::Stopping = conclusion {
+            if let Conclusion::Stopping | Conclusion::Restarting = conclusion {
             } else {
                 self.record_finish()?;
                 if let Some(document) = &self.document {
@@ -322,7 +409,9 @@ impl<'i, D: Driver> Runner<'i, D> {
                 let qualified = self
                     .path
                     .render();
+                let outer = self.serial;
                 let result = self.perform_prologue(env, &qualified, ops);
+                self.serial = outer;
                 self.path
                     .pop();
                 result
@@ -332,7 +421,12 @@ impl<'i, D: Driver> Runner<'i, D> {
                 title,
                 body,
                 ..
-            } => self.walk_section(env, numeral, title.as_deref(), body),
+            } => {
+                let outer = self.serial;
+                let result = self.walk_section(env, numeral, title.as_deref(), body);
+                self.serial = outer;
+                result
+            }
             // Every body the translator emits is a `Sequence`, so a Step is
             // always reached as one of its members, where `walk_sequence`
             // supplies the parallel ordinal counter. A bare Step never reaches
@@ -353,15 +447,27 @@ impl<'i, D: Driver> Runner<'i, D> {
                 Conclusion::Completed(Outcome::Done(_)) => Err(RunnerError::InvalidCost),
                 other => Ok(other),
             },
-            Operation::Invoke(invocable, _) => self.walk_invoke(env, invocable),
+            Operation::Invoke(invocable, _) => {
+                let outer = self.serial;
+                let replaying = self.replaying;
+                let result = self.walk_invoke(env, invocable);
+                self.serial = outer;
+                self.replaying = replaying;
+                result
+            }
             Operation::Execute(executable, _) => {
                 let function = self.executable_name(&executable.target);
                 let qualified = self
                     .path
                     .render();
-                let run_id = self
-                    .appender
-                    .run_id();
+                // A host call inside a completed scope has already happened.
+                // Announce it so the replay reads as the run it retraces, and
+                // do not dispatch it a second time.
+                if self.replaying() {
+                    self.driver
+                        .announce(&describe_execute(&function));
+                    return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
+                }
                 // `Command` (e.g. `exec()`) and `Instant` (e.g. `now()`)
                 // builtins run on the host; `Command` is vetted on an
                 // editable prompt, `Instant` runs unvetted (see below).
@@ -377,15 +483,12 @@ impl<'i, D: Driver> Runner<'i, D> {
                     true
                 };
                 if effectful {
-                    self.appender
-                        .append(&Record {
-                            recorded: now_iso8601(),
-                            run_id,
-                            path: qualified.clone(),
-                            state: State::Execute {
-                                function: function.clone(),
-                            },
-                        })?;
+                    self.record(
+                        &qualified,
+                        State::Execute {
+                            function: function.clone(),
+                        },
+                    )?;
                 }
                 let outcome = match kind {
                     // Nothing to vet, and cannot fail, so we skip the command
@@ -402,69 +505,85 @@ impl<'i, D: Driver> Runner<'i, D> {
                     }
                     Kind::System => {
                         let script = self.script_text(env, executable)?;
-                        match self
-                            .driver
-                            .command(&qualified, &script)
-                        {
-                            UserInput::Done(chosen) => {
-                                match super::evaluator::dispatch(
-                                    &self.library,
-                                    &self.context,
-                                    env,
-                                    executable,
-                                    Some(&[chosen]),
-                                ) {
-                                    Ok(value) => Ok(Conclusion::Completed(Outcome::Done(value))),
-                                    // A non-zero exit throws to fail the step
-                                    // rather than aborting the run; the walk
-                                    // continues.
-                                    Err(RunnerError::CommandFailed(code)) => {
-                                        Ok(Conclusion::Throwing(Failure::Aborted(format!(
-                                            "External command exited with status {}",
-                                            code
-                                        ))))
+                        // Review is not an answer: it steps back through the
+                        // trail and returns to this prompt unchanged.
+                        loop {
+                            break match self
+                                .driver
+                                .command(&qualified, &script)
+                            {
+                                UserInput::Review => match self.review()? {
+                                    Reviewed::Amended => return Ok(Conclusion::Restarting),
+                                    Reviewed::Quit => return self.record_stop(),
+                                    Reviewed::Left => continue,
+                                },
+                                UserInput::Done(chosen) => {
+                                    match super::evaluator::dispatch(
+                                        &self.library,
+                                        &self.context,
+                                        env,
+                                        executable,
+                                        Some(&[chosen]),
+                                    ) {
+                                        Ok(value) => {
+                                            Ok(Conclusion::Completed(Outcome::Done(value)))
+                                        }
+                                        // A non-zero exit throws to fail the step
+                                        // rather than aborting the run; the walk
+                                        // continues.
+                                        Err(RunnerError::CommandFailed(code)) => {
+                                            Ok(Conclusion::Throwing(Failure::Aborted(format!(
+                                                "External command exited with status {}",
+                                                code
+                                            ))))
+                                        }
+                                        Err(other) => Err(other),
                                     }
-                                    Err(other) => Err(other),
                                 }
-                            }
-                            UserInput::Skip => {
-                                Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
-                            }
-                            UserInput::Fail(reason) => {
-                                Ok(Conclusion::Throwing(Failure::Aborted(reason)))
-                            }
-                            UserInput::Override => {
-                                unreachable!() // a command prompt never offers Override
-                            }
-                            UserInput::Quit => self.record_stop(),
+                                UserInput::Skip => {
+                                    Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
+                                }
+                                UserInput::Fail(reason) => {
+                                    Ok(Conclusion::Throwing(Failure::Aborted(reason)))
+                                }
+                                // a command prompt has no rollup to override
+                                UserInput::Override => unreachable!(),
+                                UserInput::Quit => self.record_stop(),
+                            };
                         }
                     }
                     Kind::Action => {
                         let (verb, value) = self.action_parts(env, executable)?;
-                        match self
-                            .driver
-                            .action(&qualified, &function, &verb, &value)
-                        {
-                            UserInput::Done(_) => {
-                                let value = super::evaluator::dispatch(
-                                    &self.library,
-                                    &self.context,
-                                    env,
-                                    executable,
-                                    None,
-                                )?;
-                                Ok(Conclusion::Completed(Outcome::Done(value)))
-                            }
-                            UserInput::Skip => {
-                                Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
-                            }
-                            UserInput::Fail(reason) => {
-                                Ok(Conclusion::Throwing(Failure::Aborted(reason)))
-                            }
-                            UserInput::Override => {
-                                unreachable!() // an action prompt never offers Override
-                            }
-                            UserInput::Quit => self.record_stop(),
+                        loop {
+                            break match self
+                                .driver
+                                .action(&qualified, &function, &verb, &value)
+                            {
+                                UserInput::Review => match self.review()? {
+                                    Reviewed::Amended => return Ok(Conclusion::Restarting),
+                                    Reviewed::Quit => return self.record_stop(),
+                                    Reviewed::Left => continue,
+                                },
+                                UserInput::Done(_) => {
+                                    let value = super::evaluator::dispatch(
+                                        &self.library,
+                                        &self.context,
+                                        env,
+                                        executable,
+                                        None,
+                                    )?;
+                                    Ok(Conclusion::Completed(Outcome::Done(value)))
+                                }
+                                UserInput::Skip => {
+                                    Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
+                                }
+                                UserInput::Fail(reason) => {
+                                    Ok(Conclusion::Throwing(Failure::Aborted(reason)))
+                                }
+                                // an action prompt has no rollup to override
+                                UserInput::Override => unreachable!(),
+                                UserInput::Quit => self.record_stop(),
+                            };
                         }
                     }
                     Kind::Computable => {
@@ -483,24 +602,18 @@ impl<'i, D: Driver> Runner<'i, D> {
                 }?;
                 // Pair the Execute with a Return carrying its value; a stopped
                 // run leaves the enter unpaired.
-                let stopped = if let Conclusion::Stopping = outcome {
+                let unwinding = if let Conclusion::Stopping | Conclusion::Restarting = outcome {
                     true
                 } else {
                     false
                 };
-                if effectful && !stopped {
+                if effectful && !unwinding {
                     let returned = if let Conclusion::Completed(Outcome::Done(value)) = &outcome {
                         Some(value.clone())
                     } else {
                         None
                     };
-                    self.appender
-                        .append(&Record {
-                            recorded: now_iso8601(),
-                            run_id,
-                            path: qualified.clone(),
-                            state: State::Return(returned),
-                        })?;
+                    self.record(&qualified, State::Return(returned))?;
                 }
                 Ok(outcome)
             }
@@ -672,10 +785,134 @@ impl<'i, D: Driver> Runner<'i, D> {
                         })
                         .collect();
                     let lexical = super::path::render_path(&lexical_segments);
-                    if self
-                        .completed
-                        .contains_key(&lexical)
-                    {
+                    let formae = render_parameter_formae(subroutine.signature);
+
+                    // A prior run's recorded arguments for this callee, in
+                    // parameter order. A prompted argument (an elided call or a
+                    // `?` hole) is restored from here rather than re-acquired;
+                    // an argument the author supplied as a source expression is
+                    // re-evaluated, so a loop variable still varies. Every
+                    // argument, however it was arrived at, is what the callee's
+                    // Begin states it started with.
+                    // A revoked entry states the very argument being amended,
+                    // so restoring from it would put the old value back and the
+                    // amendment would silently do nothing. It is still what the
+                    // prompt is seeded from: a default the user commits at the
+                    // real prompt is an ordinary prompt.
+                    let entry = self
+                        .ledger
+                        .look(self.serial, &lexical);
+                    let revoked = match entry {
+                        Some(entry) if entry.revoked => Some(
+                            entry
+                                .began
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
+                    let began = match entry {
+                        Some(entry) if !entry.revoked => Some(
+                            entry
+                                .began
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
+
+                    // First pass: everything knowable without asking. A hole
+                    // with nothing recorded stays open until the dispatch has
+                    // been recorded, below.
+                    let count = if invocable.elided {
+                        subroutine.arity()
+                    } else {
+                        invocable
+                            .arguments
+                            .len()
+                    };
+                    let mut supplied: Vec<Option<Supplied>> = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let bind = params
+                            .get(i)
+                            .map(|p| p.value);
+                        let prompted = if invocable.elided {
+                            true
+                        } else if let Operation::Hole(_) = &invocable.arguments[i] {
+                            true
+                        } else {
+                            false
+                        };
+                        let value = if prompted {
+                            began
+                                .as_ref()
+                                .and_then(|r| r.get(i))
+                                .map(|s| {
+                                    s.value
+                                        .clone()
+                                })
+                        } else {
+                            Some(super::evaluator::evaluate(
+                                &self.library,
+                                &self.context,
+                                env,
+                                &invocable.arguments[i],
+                            )?)
+                        };
+                        supplied.push(value.map(|value| Supplied {
+                            value,
+                            name: bind.map(|b| b.to_string()),
+                        }));
+                    }
+
+                    // A procedure body reads nothing but its arguments, so
+                    // those are a closed frontier: a recorded completion holds
+                    // for everything beneath it while they agree.
+                    let known: Option<Vec<Supplied>> = supplied
+                        .iter()
+                        .cloned()
+                        .collect();
+                    let recall = match &known {
+                        Some(known) => self.recall(&lexical, known),
+                        None => Recall::Nothing,
+                    };
+                    if let Recall::Stale = recall {
+                        self.replaying = 0;
+                    }
+                    if let Recall::Valid(serial, outcome, _) = recall {
+                        // Descend for display, in the callee's own environment
+                        // rebuilt from its arguments. The callee's bindings are
+                        // its own and do not escape.
+                        self.enter_replayed(serial);
+                        for item in known
+                            .iter()
+                            .flatten()
+                        {
+                            if let Some(name) = &item.name {
+                                local.extend(
+                                    name.clone(),
+                                    item.value
+                                        .clone(),
+                                );
+                            }
+                        }
+                        let saved = self
+                            .path
+                            .replace(lexical_segments);
+                        let outer = self.replaying;
+                        self.replaying = outer + 1;
+                        self.announce_procedure(subroutine, name, &lexical, &local);
+                        let result = self.walk(&mut local, &subroutine.body);
+                        self.replaying = outer;
+                        self.path
+                            .replace(saved);
+                        result?;
+                        self.leave_replayed(serial, &lexical, "\u{2199}", &verdict_of(&outcome));
+                        return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
+                    }
+
+                    // A call the run being retraced never settled is passed
+                    // over: replaying descends through what happened, and this
+                    // did not.
+                    if self.replaying() {
                         return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
                     }
 
@@ -688,122 +925,72 @@ impl<'i, D: Driver> Runner<'i, D> {
 
                     // Record the dispatch on arrival, before any argument is
                     // solicited, so that the time the user takes supplying one
-                    // falls between this and the Input that follows. Declining
+                    // falls between this and the Begin that follows. Declining
                     // at the prompt settles Skip or Fail at the callee's path,
                     // which stands as the record of a call that was dispatched
                     // and turned down.
-                    let run_id = self
-                        .appender
-                        .run_id();
-                    self.appender
-                        .append(&Record {
-                            recorded: now_iso8601(),
-                            run_id,
-                            path: caller.clone(),
-                            state: State::Invoke(InvokeTarget::Procedure(name.to_string())),
-                        })?;
-
-                    let formae = render_parameter_formae(subroutine.signature);
-
-                    // A prior run's recorded inputs for this callee, in
-                    // parameter order. A prompted argument (an elided call or
-                    // a `?` hole) is restored from here on resume rather than
-                    // re-acquired; an argument the author supplied as a source
-                    // expression is re-evaluated, so a loop variable still
-                    // varies. Every argument, however it was arrived at, is
-                    // what the callee's Begin states it started with.
-                    let recorded = self
-                        .inputs
-                        .get(&lexical)
-                        .cloned();
-                    let mut supplied: Vec<Supplied> = Vec::new();
-                    if invocable.elided {
-                        for i in 0..subroutine.arity() {
-                            let bind = params
-                                .get(i)
-                                .map(|p| p.value);
-                            let forma = formae
-                                .get(i)
-                                .map(|s| s.as_str());
-                            let value = match recorded
-                                .as_ref()
-                                .and_then(|r| r.get(i))
-                            {
-                                Some(s) => s
-                                    .value
-                                    .clone(),
-                                None => match self
-                                    .driver
-                                    .acquire(&caller, &invoked, bind, forma)
-                                {
-                                    UserInput::Done(value) => value,
-                                    other => return self.abandon(&lexical, other),
-                                },
-                            };
-                            if let Some(bind) = bind {
-                                local.extend(bind.to_string(), value.clone());
-                            }
-                            supplied.push(Supplied {
-                                value,
-                                name: bind.map(|b| b.to_string()),
-                            });
+                    // The dispatch is written when the `Begin` it introduces
+                    // is, so a re-entry records neither.
+                    let introduces = match &known {
+                        Some(known) => {
+                            let serial = self
+                                .ledger
+                                .serial_for(self.serial, &lexical);
+                            !self
+                                .ledger
+                                .standing(serial, &lexical, known)
                         }
-                    } else {
-                        for (i, arg) in invocable
-                            .arguments
-                            .iter()
-                            .enumerate()
-                        {
-                            let bind = params
-                                .get(i)
-                                .map(|p| p.value);
-                            if let Operation::Hole(_) = arg {
-                                let value = match recorded
-                                    .as_ref()
-                                    .and_then(|r| r.get(i))
-                                {
-                                    Some(s) => s
-                                        .value
-                                        .clone(),
-                                    None => {
-                                        let forma = formae
-                                            .get(i)
-                                            .map(|s| s.as_str());
-                                        match self
-                                            .driver
-                                            .acquire(&caller, &invoked, bind, forma)
-                                        {
-                                            UserInput::Done(value) => value,
-                                            other => return self.abandon(&lexical, other),
-                                        }
-                                    }
-                                };
-                                if let Some(bind) = bind {
-                                    local.extend(bind.to_string(), value.clone());
-                                }
-                                supplied.push(Supplied {
-                                    value,
-                                    name: bind.map(|b| b.to_string()),
-                                });
-                            } else {
-                                let value = super::evaluator::evaluate(
-                                    &self.library,
-                                    &self.context,
-                                    env,
-                                    arg,
-                                )?;
-                                if let Some(bind) = bind {
-                                    local.extend(bind.to_string(), value.clone());
-                                }
-                                supplied.push(Supplied {
-                                    value,
-                                    name: bind.map(|b| b.to_string()),
-                                });
-                            }
-                        }
+                        None => true,
+                    };
+                    if introduces {
+                        self.record(
+                            &caller,
+                            State::Invoke(InvokeTarget::Procedure(name.to_string())),
+                        )?;
                     }
 
-                    self.begin_scope(&lexical, supplied)?;
+                    // Second pass: solicit whatever is still open.
+                    let mut settled: Vec<Supplied> = Vec::with_capacity(count);
+                    for (i, item) in supplied
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let item = match item {
+                            Some(item) => item,
+                            None => {
+                                let bind = params
+                                    .get(i)
+                                    .map(|p| p.value);
+                                let forma = formae
+                                    .get(i)
+                                    .map(|s| s.as_str());
+                                let seed = revoked
+                                    .as_ref()
+                                    .and_then(|r| r.get(i))
+                                    .map(|s| &s.value);
+                                match self
+                                    .driver
+                                    .acquire(&caller, &invoked, bind, forma, seed)
+                                {
+                                    UserInput::Done(value) => Supplied {
+                                        value,
+                                        name: bind.map(|b| b.to_string()),
+                                    },
+                                    other => return self.abandon(&lexical, settled, other),
+                                }
+                            }
+                        };
+                        if let Some(name) = &item.name {
+                            local.extend(
+                                name.clone(),
+                                item.value
+                                    .clone(),
+                            );
+                        }
+                        settled.push(item);
+                    }
+
+                    self.begin_scope(&lexical, settled)?;
 
                     let saved = self
                         .path
@@ -812,11 +999,14 @@ impl<'i, D: Driver> Runner<'i, D> {
 
                     // Walk the callee's body in its own `local` environment,
                     // then close its scope; a Quit or error skips the close,
-                    // leaving the procedure unfinished.
+                    // leaving the procedure unfinished. The close is taken back
+                    // at the caller's depth: it is the call, and review reaches
+                    // the body through it.
                     let result = self.walk(&mut local, &subroutine.body);
                     let kind = self.kind_of_scope(&subroutine.body);
                     let sealed = match result {
                         Ok(Conclusion::Stopping) => Ok(Conclusion::Stopping),
+                        Ok(Conclusion::Restarting) => Ok(Conclusion::Restarting),
                         Ok(Conclusion::Completed(outcome)) => {
                             self.seal_scope(&lexical, outcome, kind)
                         }
@@ -845,53 +1035,89 @@ impl<'i, D: Driver> Runner<'i, D> {
                 // external procedure, otherwise Skip or Fail. An unattended
                 // (automatic) run records Skip — nothing executed it and no one
                 // is present to attest it, so it is not marked Done.
-                let run_id = self
-                    .appender
-                    .run_id();
                 let caller = self
                     .path
                     .render();
-                self.appender
-                    .append(&Record {
-                        recorded: now_iso8601(),
-                        run_id,
-                        path: caller,
-                        state: State::Invoke(InvokeTarget::Uri(
-                            ext.value
-                                .to_string(),
-                        )),
-                    })?;
 
                 self.path
                     .push(PathSegment::External(ext.value));
                 let qualified = self
                     .path
                     .render();
-                if self
-                    .completed
-                    .contains_key(&qualified)
-                {
+                // An external target has no body in this document, so a
+                // completed one shows its recorded verdict and nothing more.
+                if let Recall::Valid(serial, outcome, _) = self.recall(&qualified, &[]) {
+                    self.enter_replayed(serial);
+                    self.leave_replayed(serial, &qualified, "⇐", &verdict_of(&outcome));
+                    self.path
+                        .pop();
+                    return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
+                }
+                if self.replaying() {
                     self.path
                         .pop();
                     return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
                 }
 
+                let serial = self
+                    .ledger
+                    .serial_for(self.serial, &qualified);
+                if !self
+                    .ledger
+                    .standing(serial, &qualified, &[])
+                {
+                    self.record(
+                        &caller,
+                        State::Invoke(InvokeTarget::Uri(
+                            ext.value
+                                .to_string(),
+                        )),
+                    )?;
+                }
                 self.begin_scope(&qualified, Vec::new())?;
                 // Prompt at the departure, echoing the arguments flowing into
                 // the external Technque.
                 let echo = self.render_deferred_echo(env, &invocable.arguments)?;
-                let embarked = self
-                    .driver
-                    .depart(&qualified, &echo);
+                // Review is not an answer at either boundary: it steps back
+                // through the trail and returns to the prompt it left.
+                let embarked = loop {
+                    match self
+                        .driver
+                        .depart(&qualified, &echo)
+                    {
+                        UserInput::Review => match self.reviewed()? {
+                            Some(conclusion) => {
+                                self.path
+                                    .pop();
+                                return Ok(conclusion);
+                            }
+                            None => {}
+                        },
+                        answered => break answered,
+                    }
+                };
                 let input = match embarked {
                     UserInput::Quit => {
                         self.path
                             .pop();
                         return self.record_stop();
                     }
-                    UserInput::Done(_) => self
-                        .driver
-                        .external(&qualified),
+                    UserInput::Done(_) => loop {
+                        match self
+                            .driver
+                            .external(&qualified)
+                        {
+                            UserInput::Review => match self.reviewed()? {
+                                Some(conclusion) => {
+                                    self.path
+                                        .pop();
+                                    return Ok(conclusion);
+                                }
+                                None => {}
+                            },
+                            answered => break answered,
+                        }
+                    },
                     declined => declined,
                 };
                 if let UserInput::Quit = input {
@@ -903,13 +1129,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 self.driver
                     .show_verdict("⇐", &qualified, &input);
                 let conclusion = outcome_from(input);
-                self.appender
-                    .append(&Record {
-                        recorded: now_iso8601(),
-                        run_id,
-                        path: qualified,
-                        state: record_state(&conclusion),
-                    })?;
+                self.record_outcome(&qualified, record_state(&conclusion))?;
                 self.path
                     .pop();
                 Ok(conclusion)
@@ -942,6 +1162,12 @@ impl<'i, D: Driver> Runner<'i, D> {
             false
         };
         if descriptive {
+            // On a replay the value was solicited once already and comes back
+            // from the enclosing scope's recorded `Bind`, so the prompt is not
+            // put to the user a second time.
+            if self.replaying() {
+                return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
+            }
             // A descriptive binding has no expression to compute its value, so
             // each name is solicited from the user in turn. A tuple binding
             // `text ~ (a, b)` prompts once per name and binds each; the step's
@@ -957,45 +1183,61 @@ impl<'i, D: Driver> Runner<'i, D> {
             };
             let mut acquired = Vec::with_capacity(names.len());
             for name in names {
-                match self
-                    .driver
-                    .acquire(&qualified, "", Some(name.value), forma)
-                {
-                    UserInput::Done(value) => acquired.push(value),
-                    UserInput::Skip => {
-                        for name in names {
-                            super::evaluator::bind_names(
-                                env,
-                                std::slice::from_ref(name),
-                                Value::Unitus,
-                            )?;
+                let seed = self
+                    .seeds
+                    .iter()
+                    .find(|item| match &item.name {
+                        Some(bound) => bound == name.value,
+                        None => false,
+                    })
+                    .map(|item| {
+                        item.value
+                            .clone()
+                    });
+                // Review is not an answer, so it does not advance to the next
+                // name: the same one is asked again, and the values already
+                // collected stand.
+                let value = loop {
+                    match self
+                        .driver
+                        .acquire(&qualified, "", Some(name.value), forma, seed.as_ref())
+                    {
+                        UserInput::Done(value) => break value,
+                        UserInput::Review => match self.review()? {
+                            Reviewed::Amended => return Ok(Conclusion::Restarting),
+                            Reviewed::Quit => return self.record_stop(),
+                            Reviewed::Left => {}
+                        },
+                        UserInput::Skip => {
+                            for name in names {
+                                super::evaluator::bind_names(
+                                    env,
+                                    std::slice::from_ref(name),
+                                    Value::Unitus,
+                                )?;
+                            }
+                            return Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)));
                         }
-                        return Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)));
+                        UserInput::Fail(reason) => {
+                            return Ok(Conclusion::Completed(Outcome::Fail(Failure::Aborted(
+                                reason,
+                            ))));
+                        }
+                        // an acquire prompt has no rollup to override
+                        UserInput::Override => unreachable!(),
+                        UserInput::Quit => return self.record_stop(),
                     }
-                    UserInput::Fail(reason) => {
-                        return Ok(Conclusion::Completed(Outcome::Fail(Failure::Aborted(
-                            reason,
-                        ))));
-                    }
-                    UserInput::Override => unreachable!(), // an acquire prompt never offers Override
-                    UserInput::Quit => return self.record_stop(),
-                }
+                };
+                acquired.push(value);
             }
             for (name, value) in names
                 .iter()
                 .zip(&acquired)
             {
                 super::evaluator::bind_names(env, std::slice::from_ref(name), value.clone())?;
+                self.note_binding(name.value, value);
             }
-            let produced = if acquired.len() == 1 {
-                acquired
-                    .into_iter()
-                    .next()
-                    .unwrap()
-            } else {
-                Value::Parametriq(acquired)
-            };
-            Ok(Conclusion::Completed(Outcome::Done(produced)))
+            Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)))
         } else {
             // Walk rather than evaluate: the bound value may be an effectful
             // spine operation — an `Invoke` that must descend into its callee
@@ -1005,12 +1247,20 @@ impl<'i, D: Driver> Runner<'i, D> {
             match self.walk(env, value)? {
                 Conclusion::Completed(Outcome::Done(value)) => {
                     super::evaluator::bind_names(env, names, value.clone())?;
-                    Ok(Conclusion::Completed(Outcome::Done(value)))
+                    for name in names {
+                        self.note_binding(
+                            name.value,
+                            env.lookup(name.value)
+                                .unwrap_or(&Value::Unitus),
+                        );
+                    }
+                    Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)))
                 }
-                Conclusion::Completed(Outcome::Skip(value)) => {
+                Conclusion::Completed(Outcome::Skip(_)) => {
                     super::evaluator::bind_names(env, names, Value::Unitus)?;
-                    Ok(Conclusion::Completed(Outcome::Skip(value)))
+                    Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
                 }
+                // A failure, a stop or a restart binds nothing and propagates
                 other => Ok(other),
             }
         }
@@ -1032,14 +1282,53 @@ impl<'i, D: Driver> Runner<'i, D> {
         over: Option<&'i Operation<'i>>,
         body: &'i Operation<'i>,
     ) -> Result<Conclusion, RunnerError> {
+        // Iterations a prior walk recorded in this scope, to be reused as the
+        // loop meets items matching them. Entries leave the pool as they are
+        // claimed, so multiplicity is preserved: a list of three items runs
+        // three times whatever was recorded, and three identical items against
+        // two recorded matches runs one fresh.
+        let mut pool: Vec<Iteration> = self
+            .ledger
+            .iterations(self.serial)
+            .into_iter()
+            .map(|(number, entry)| Iteration {
+                number,
+                began: entry
+                    .began
+                    .clone(),
+                complete: entry
+                    .outcome
+                    .is_some(),
+            })
+            .collect();
+        // Sibling loops in one scope share this numbering, so the second loop
+        // continues where the first left off rather than colliding with it.
+        let mut highest = pool
+            .iter()
+            .map(|item| item.number)
+            .max()
+            .unwrap_or(0);
+
         match over {
             None => {
-                let mut number = 1;
                 loop {
-                    if let Conclusion::Stopping = self.walk_iteration(env, names, number, body)? {
-                        return Ok(Conclusion::Stopping);
+                    // `repeat` binds no item, so there is nothing to match on
+                    // and reuse stays positional.
+                    let number = match pool.is_empty() {
+                        true => {
+                            highest += 1;
+                            highest
+                        }
+                        false => {
+                            pool.remove(0)
+                                .number
+                        }
+                    };
+                    match self.walk_iteration(env, names, number, body)? {
+                        Conclusion::Stopping => return Ok(Conclusion::Stopping),
+                        Conclusion::Restarting => return Ok(Conclusion::Restarting),
+                        _ => {}
                     }
-                    number += 1;
                 }
             }
             Some(expr) => {
@@ -1059,15 +1348,13 @@ impl<'i, D: Driver> Runner<'i, D> {
                 let value = super::evaluator::evaluate(&self.library, &self.context, env, expr)?;
                 let items = super::evaluator::coerce_to_list(value)?;
                 let mut rollup = Rollup::new();
-                for (i, item) in items
-                    .into_iter()
-                    .enumerate()
-                {
+                for item in items {
                     super::evaluator::bind_names(env, names, item)?;
-
-                    let number = i + 1;
+                    let number =
+                        claim_iteration(&mut pool, &iteration_values(names, env), &mut highest);
                     match self.walk_iteration(env, names, number, body)? {
                         Conclusion::Stopping => return Ok(Conclusion::Stopping),
+                        Conclusion::Restarting => return Ok(Conclusion::Restarting),
                         Conclusion::Throwing(f) => return Ok(Conclusion::Throwing(f)),
                         Conclusion::Completed(other) => rollup.absorb(other),
                     }
@@ -1100,10 +1387,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         result
     }
 
-    /// Walk one pass of a loop body within its `[number]` iteration scope,
-    /// bracketing it with `↘`/`↙` chrome. The `↘` line echoes the loop
-    /// variable(s) bound for this pass, in the same `value ~ name` form used
-    /// for a procedure call's arguments.
+    /// Walk one pass of a loop body within its `[number]` iteration scope.
     fn walk_iteration(
         &mut self,
         env: &mut Environment,
@@ -1116,24 +1400,59 @@ impl<'i, D: Driver> Runner<'i, D> {
         let qualified = self
             .path
             .render();
-        let echo = render_iteration_echo(names, env);
-        self.driver
-            .enter(&qualified, &echo);
-        let result = self.walk(env, body);
-        let verdict = match &result {
-            Ok(Conclusion::Completed(Outcome::Done(_))) => Some(UserInput::Done(Value::Unitus)),
-            Ok(Conclusion::Completed(Outcome::Skip(_))) => Some(UserInput::Skip),
-            Ok(Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason)))) => {
-                Some(UserInput::Fail(reason.clone()))
-            }
-            _ => None,
-        };
-        if let Some(verdict) = verdict {
-            self.driver
-                .show_verdict("↙", &qualified, &verdict);
-        }
+        let outer = self.serial;
+        let replaying = self.replaying;
+        let result = self.perform_iteration(env, names, &qualified, body);
+        self.serial = outer;
+        self.replaying = replaying;
         self.path
             .pop();
+        result
+    }
+
+    /// Bracket one iteration `Begin ( item ~ name )`…outcome and walk its
+    /// body, with `↘`/`↙` chrome echoing the loop variable(s) bound for this
+    /// pass in the same form a procedure call's arguments take. An iteration
+    /// takes no prompt of its own: its outcome is what its body rolled up to.
+    fn perform_iteration(
+        &mut self,
+        env: &mut Environment,
+        names: &'i [language::Identifier<'i>],
+        qualified: &str,
+        body: &'i Operation<'i>,
+    ) -> Result<Conclusion, RunnerError> {
+        let supplied = iteration_values(names, env);
+        let echo = render_iteration_echo(names, env);
+        match self.recall(qualified, &supplied) {
+            Recall::Stale => self.replaying = 0,
+            Recall::Nothing if self.replaying() => {
+                return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
+            }
+            Recall::Nothing => {}
+            Recall::Valid(serial, outcome, bound) => {
+                self.enter_replayed(serial);
+                self.driver
+                    .enter(qualified, &echo);
+                self.replay(env, body, &bound)?;
+                self.leave_replayed(serial, qualified, "\u{2199}", &verdict_of(&outcome));
+                return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
+            }
+        }
+
+        self.begin_scope(qualified, supplied)?;
+        self.driver
+            .enter(qualified, &echo);
+        let result = self.walk(env, body);
+        // A stopped or errored pass leaves its Begin unpaired, which is what
+        // marks the iteration to be redone.
+        if let Ok(conclusion) = &result {
+            if let Conclusion::Stopping | Conclusion::Restarting = conclusion {
+            } else {
+                self.record_outcome(qualified, record_state(conclusion))?;
+                self.driver
+                    .show_verdict("\u{2199}", qualified, &verdict_from(conclusion));
+            }
+        }
         result
     }
 
@@ -1169,6 +1488,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             match outcome {
                 // Stopped and Throw abandon the sequence at once; a Fail rolls up.
                 Conclusion::Stopping => return Ok(Conclusion::Stopping),
+                Conclusion::Restarting => return Ok(Conclusion::Restarting),
                 Conclusion::Throwing(failure) => return Ok(Conclusion::Throwing(failure)),
                 Conclusion::Completed(other) => rollup.absorb(other),
             }
@@ -1188,13 +1508,32 @@ impl<'i, D: Driver> Runner<'i, D> {
         let qualified = self
             .path
             .render();
-        if self
-            .completed
-            .contains_key(&qualified)
-        {
+        // A Section's `Begin` is empty and `names_read` stops at one, so its
+        // own guard says nothing; what is stale beneath it is caught by the
+        // guards on the way down.
+        if let Recall::Valid(serial, outcome, bound) = self.recall(&qualified, &[]) {
+            // Descend rather than return: a completed Section's `Begin` is
+            // empty, so its own guard can say nothing about the work nested
+            // beneath it and only the walk can reach it.
+            self.enter_replayed(serial);
+            let outer = self.replaying;
+            self.replaying = outer + 1;
+            let result = self.perform_section(env, numeral, title, body);
+            self.replaying = outer;
+            result?;
+            for item in &bound {
+                if let Some(name) = &item.name {
+                    env.extend(
+                        name.clone(),
+                        item.value
+                            .clone(),
+                    );
+                }
+            }
+            self.leave_replayed(serial, &qualified, "\u{2199}", &verdict_of(&outcome));
             self.path
                 .pop();
-            return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
+            return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
         }
         self.begin_scope(&qualified, Vec::new())?;
         let result = self.perform_section(env, numeral, title, body);
@@ -1206,6 +1545,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         // prompt — the section did not complete.
         match result {
             Ok(Conclusion::Stopping) => Ok(Conclusion::Stopping),
+            Ok(Conclusion::Restarting) => Ok(Conclusion::Restarting),
             Ok(Conclusion::Completed(outcome)) => self.seal_scope(&qualified, outcome, kind),
             Ok(Conclusion::Throwing(failure)) => {
                 self.seal_scope(&qualified, Outcome::Fail(failure), kind)
@@ -1265,7 +1605,13 @@ impl<'i, D: Driver> Runner<'i, D> {
             .path
             .render();
 
+        let outer = self.serial;
+        let replaying = self.replaying;
+        let seeds = std::mem::take(&mut self.seeds);
         let result = self.perform_step(env, &qualified, op);
+        self.serial = outer;
+        self.replaying = replaying;
+        self.seeds = seeds;
 
         self.path
             .pop();
@@ -1288,44 +1634,35 @@ impl<'i, D: Driver> Runner<'i, D> {
         qualified: &str,
         ops: &'i [Operation<'i>],
     ) -> Result<Conclusion, RunnerError> {
-        if let Some(value) = self
-            .completed
-            .get(qualified)
-        {
-            let value = value.clone();
-            if ops
-                .iter()
-                .any(nests_work)
-            {
-                for op in ops {
-                    self.walk(env, op)?;
+        // A prologue reads only what its procedure was called with, and the
+        // procedure's own guard covers that, so its `Begin` is empty.
+        if let Recall::Valid(serial, outcome, bound) = self.recall(qualified, &[]) {
+            self.serial = serial;
+            let outer = self.replaying;
+            self.replaying = outer + 1;
+            let result = self.walk_sequence(env, ops);
+            self.replaying = outer;
+            result?;
+            for item in &bound {
+                if let Some(name) = &item.name {
+                    env.extend(
+                        name.clone(),
+                        item.value
+                            .clone(),
+                    );
                 }
-            } else if let Some(names) = ops
-                .iter()
-                .find_map(binding_names)
-            {
-                super::evaluator::bind_names(env, names, value.clone())?;
             }
-            return Ok(Conclusion::Completed(Outcome::Done(value)));
+            return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
         }
 
         self.begin_scope(qualified, Vec::new())?;
         let conclusion = self.walk_sequence(env, ops)?;
-        if let Conclusion::Stopping = conclusion {
+        if let Conclusion::Stopping | Conclusion::Restarting = conclusion {
             return Ok(conclusion);
         }
         // Translation emits a Prologue only when the description carries real
         // work (prose-only descriptions never become step 0)
-        let record = Record {
-            recorded: now_iso8601(),
-            run_id: self
-                .appender
-                .run_id(),
-            path: qualified.to_string(),
-            state: record_state(&conclusion),
-        };
-        self.appender
-            .append(&record)?;
+        self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
     }
 
@@ -1345,54 +1682,56 @@ impl<'i, D: Driver> Runner<'i, D> {
             // perform_step called with non-Step operation
             unreachable!();
         };
-        if let Some(value) = self
-            .completed
-            .get(qualified)
-        {
-            let value = value.clone();
-            // A replayed step does not re-run its body, so we re-establish
-            // any results it made by re-binding the step's names to their
-            // recorded values. A step that nests further work (a `foreach`
-            // loop, substeps) is re-walked instead: if its descendants are
-            // all completed too, they short-circuit without re-prompting
-            // while re-hydrating bindings made inside the loop body.
-            if nests_work(body) {
-                self.walk(env, body)?;
-            } else if let Some(names) = binding_names(body) {
-                super::evaluator::bind_names(env, names, value.clone())?;
+        let reads = read_values(body, env);
+        match self.recall(qualified, &reads) {
+            // An amended input reaches its consumers by re-execution, so a
+            // stale step runs for real even inside a scope being replayed.
+            // That is how an amendment reaches beneath a completed Section.
+            Recall::Stale => self.replaying = 0,
+            Recall::Nothing if self.replaying() => {
+                // The run being retraced never settled this step — a sibling
+                // below a failure, say. Pass over it rather than prompting for
+                // work that is not being redone.
+                return Ok(Conclusion::Completed(Outcome::Done(Value::Unitus)));
             }
-            return Ok(Conclusion::Completed(Outcome::Done(value)));
+            Recall::Nothing => {}
+            Recall::Valid(serial, outcome, bound) => {
+                // A replayed step shows itself and descends, so the user watching
+                // sees the work being passed over and the guard reaches the scopes
+                // nested within it — but nothing is prompted for or recorded, and
+                // the bindings it made come from the trail rather than from walking
+                // the body again.
+                //
+                // Standing at the recorded serial is what makes those descendants
+                // reachable — they are keyed under it, not under the caller.
+                self.enter_replayed(serial);
+                self.display_step(env, source, qualified);
+                self.replay(env, body, &bound)?;
+                self.leave_replayed(serial, qualified, "→", &verdict_of(&outcome));
+                return Ok(Conclusion::Completed(Outcome::Done(value_of(&outcome))));
+            }
         }
+
+        // A revoked step's recorded bindings, for its acquire prompts to open
+        // on. Taken here because the `Begin` below rebuilds the entry.
+        self.seeds = match self
+            .ledger
+            .look(self.serial, qualified)
+        {
+            Some(entry) if entry.revoked => entry
+                .bound
+                .clone(),
+            _ => Vec::new(),
+        };
 
         // Mark the start of work on this step before walking its body,
         // so any Invoke/Execute records emitted by the body land between
         // this Begin and the eventual outcome record.
-        let run_id = self
-            .appender
-            .run_id();
-        let begin = Record {
-            recorded: now_iso8601(),
-            run_id,
-            path: qualified.to_string(),
-            state: State::Begin(read_values(body, env)),
-        };
-        self.appender
-            .append(&begin)?;
+        self.allocate(qualified);
+        self.opening = "\u{2192}";
+        self.record(qualified, State::Begin(reads))?;
 
-        let subs = env.substitutions();
-        let step_text = crate::formatting::formatter::render_step(
-            source,
-            &subs,
-            self.driver
-                .renderer(),
-        );
-
-        let depth = self
-            .path
-            .depth();
-        let text = render_constraints(&self.constraints).unwrap_or_default();
-        self.driver
-            .step(qualified, &text, &step_text, depth);
+        self.display_step(env, source, qualified);
 
         // A descriptive binding on a step with response choices takes its value
         // from the chosen response, not a separate acquire: skip the body walk
@@ -1404,28 +1743,31 @@ impl<'i, D: Driver> Runner<'i, D> {
         } else {
             match self.walk(env, body)? {
                 Conclusion::Stopping => return Ok(Conclusion::Stopping),
+                Conclusion::Restarting => return Ok(Conclusion::Restarting),
                 Conclusion::Completed(Outcome::Done(value)) => value,
                 // A rolled-up child failure signs off through `overrule`: the
                 // failure stands and propagates by default, but an interactive
                 // run may Override it to Done, severing the rollup.
                 Conclusion::Completed(Outcome::Fail(_)) => {
-                    let input = self
-                        .driver
-                        .overrule(qualified, "→", Standing::Fail);
+                    let question = Question {
+                        qualified,
+                        marker: "→",
+                        standing: Standing::Fail,
+                        kind: Kind::Prose,
+                        produced: Value::Unitus,
+                        reviewable: self.reviewable(),
+                    };
+                    let input = match self.settle(question, &[], "→")? {
+                        Some(input) => input,
+                        None => return Ok(Conclusion::Restarting),
+                    };
                     if let UserInput::Quit = input {
                         return self.record_stop();
                     }
                     self.driver
                         .show_verdict("→", qualified, &input);
                     let conclusion = outcome_from(input);
-                    let record = Record {
-                        recorded: now_iso8601(),
-                        run_id,
-                        path: qualified.to_string(),
-                        state: record_state(&conclusion),
-                    };
-                    self.appender
-                        .append(&record)?;
+                    self.record_outcome(qualified, record_state(&conclusion))?;
                     return Ok(conclusion);
                 }
                 // The body recorded itself — a declined command beat (Skip) or a
@@ -1435,17 +1777,11 @@ impl<'i, D: Driver> Runner<'i, D> {
                     let outcome = match settled {
                         Conclusion::Throwing(failure) => Outcome::Fail(failure),
                         Conclusion::Completed(other) => other,
-                        Conclusion::Stopping => unreachable!(), // Stopped returned above
+                        // Stopping and Restarting both returned above
+                        Conclusion::Stopping | Conclusion::Restarting => unreachable!(),
                     };
                     let conclusion = Conclusion::Completed(outcome);
-                    let record = Record {
-                        recorded: now_iso8601(),
-                        run_id,
-                        path: qualified.to_string(),
-                        state: record_state(&conclusion),
-                    };
-                    self.appender
-                        .append(&record)?;
+                    self.record_outcome(qualified, record_state(&conclusion))?;
                     let verdict = match &conclusion {
                         Conclusion::Completed(Outcome::Skip(_)) => UserInput::Skip,
                         Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason))) => {
@@ -1468,14 +1804,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             let conclusion = Conclusion::Completed(Outcome::Done(produced));
             self.driver
                 .show_verdict("→", qualified, &verdict_from(&conclusion));
-            let record = Record {
-                recorded: now_iso8601(),
-                run_id,
-                path: qualified.to_string(),
-                state: record_state(&conclusion),
-            };
-            self.appender
-                .append(&record)?;
+            self.record_outcome(qualified, record_state(&conclusion))?;
             return Ok(conclusion);
         }
 
@@ -1486,9 +1815,18 @@ impl<'i, D: Driver> Runner<'i, D> {
         let kind = self.kind_of_step(op);
         // `ask` consumes `produced`; keep a copy for a Skip to propagate.
         let propagate = produced.clone();
-        let input = self
-            .driver
-            .ask(qualified, &choices, produced, kind);
+        let question = Question {
+            qualified,
+            marker: "→",
+            standing: Standing::Done,
+            kind,
+            produced,
+            reviewable: self.reviewable(),
+        };
+        let input = match self.settle(question, &choices, "→")? {
+            Some(input) => input,
+            None => return Ok(Conclusion::Restarting),
+        };
 
         // Quit halts the walk; this step's Begin stands without a matching
         // outcome, so resume re-runs it.
@@ -1507,27 +1845,257 @@ impl<'i, D: Driver> Runner<'i, D> {
         if binding_via_response {
             if let Some(names) = binding_names(body) {
                 if let Conclusion::Completed(outcome) = &conclusion {
-                    match outcome {
-                        Outcome::Done(value) => {
-                            super::evaluator::bind_names(env, names, value.clone())?
+                    let bound = match outcome {
+                        Outcome::Done(value) => Some(value.clone()),
+                        Outcome::Skip(_) => Some(Value::Unitus),
+                        _ => None,
+                    };
+                    if let Some(value) = bound {
+                        super::evaluator::bind_names(env, names, value)?;
+                        for name in names {
+                            self.note_binding(
+                                name.value,
+                                env.lookup(name.value)
+                                    .unwrap_or(&Value::Unitus),
+                            );
                         }
-                        Outcome::Skip(_) => {
-                            super::evaluator::bind_names(env, names, Value::Unitus)?
-                        }
-                        _ => {}
                     }
                 }
             }
         }
-        let record = Record {
-            recorded: now_iso8601(),
-            run_id,
-            path: qualified.to_string(),
-            state: record_state(&conclusion),
-        };
-        self.appender
-            .append(&record)?;
+        self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
+    }
+
+    /// Take a verdict at an Enter-site, entering the review loop and asking
+    /// again as many times as the user asks for it. `None` means the walk is
+    /// restarting: the user amended a value, the `Revoke` is written, and there
+    /// is nothing further to settle here.
+    ///
+    /// The site is remembered once it settles, so review reaches back over what
+    /// the walk has passed but never over the node being prompted.
+    fn settle(
+        &mut self,
+        question: Question<'_>,
+        choices: &[&str],
+        marker: &str,
+    ) -> Result<Option<UserInput>, RunnerError> {
+        let qualified = question
+            .qualified
+            .to_string();
+        let serial = self.serial;
+        // A verdict already chosen for this position in review settles it
+        // without asking: the answer was given there.
+        let chosen = match &self.amending {
+            Some((at, _)) if *at == serial => self
+                .amending
+                .take(),
+            _ => None,
+        };
+        if let Some((_, verdict)) = chosen {
+            return Ok(Some(verdict));
+        }
+        let mut question = question;
+        loop {
+            let offers = self.offers(question.standing);
+            let input = self
+                .driver
+                .ask(question, choices, &offers);
+            if let UserInput::Review = input {
+                match self.review()? {
+                    Reviewed::Amended => return Ok(None),
+                    Reviewed::Quit => return Ok(Some(UserInput::Quit)),
+                    Reviewed::Left => {}
+                }
+                // Review left the walk where it was, so put the same question
+                // again. The produced value was consumed, so it is rebuilt as
+                // unit — a reviewed prompt has already shown what it settles.
+                question = Question {
+                    qualified: &qualified,
+                    marker,
+                    standing: offers_standing(&offers),
+                    kind: Kind::Prose,
+                    produced: Value::Unitus,
+                    reviewable: self.reviewable(),
+                };
+                continue;
+            }
+            return Ok(Some(input));
+        }
+    }
+
+    /// Run the review cursor over the Enter-sites this walk has passed, until
+    /// the user leaves it or amends one. `true` means they amended: the
+    /// `Revoke` is written and the walk is to restart.
+    ///
+    /// The walker's position does not move — it is a Rust call stack, which
+    /// cannot be rewound — so this is a modal loop at the live prompt.
+    fn review(&mut self) -> Result<Reviewed, RunnerError> {
+        // The cursor reads the trail, and the loop below writes to it, so it
+        // moves over a copy taken when review opens. Amending ends review, so
+        // the copy cannot go stale underneath the cursor.
+        let records = self
+            .records
+            .clone();
+        let trail = Trail::new(&records);
+        let mut at = match trail.last() {
+            Some(at) => at,
+            None => return Ok(Reviewed::Left),
+        };
+        loop {
+            let record = match at {
+                Position::At(i) => &records[i],
+                Position::Live => return Ok(Reviewed::Left),
+            };
+            let qualified = record
+                .path
+                .clone();
+            let serial = record.serial;
+            let settled = settled_by(&record.state);
+            let marker = marker_of(record);
+            let offers = reviewing(settled.as_ref());
+            let motion = match self
+                .driver
+                .review(marker, &qualified, settled.as_ref(), &offers)
+            {
+                Review::Back => Motion::Up,
+                Review::Forward => Motion::Down,
+                Review::OutOf => Motion::Left,
+                Review::Into => Motion::Right,
+                Review::Prior => Motion::PageUp,
+                Review::Next => Motion::PageDown,
+                Review::Chose(offer) => match offer {
+                    Offer::Quit => return Ok(Reviewed::Quit),
+                    // The answer was given here, so the position is not asked
+                    // again: the walk restarts and settles it on the way back
+                    // through, and what depended on it is redone.
+                    Offer::Skip => {
+                        self.amend(serial, &qualified, UserInput::Skip)?;
+                        return Ok(Reviewed::Amended);
+                    }
+                    Offer::Override => {
+                        self.amend(serial, &qualified, UserInput::Override)?;
+                        return Ok(Reviewed::Amended);
+                    }
+                    // Edit has no value and Fail no reason until someone types
+                    // one, so these two withdraw and let the replay ask.
+                    Offer::Edit | Offer::Fail => {
+                        self.revoke(serial, &qualified)?;
+                        return Ok(Reviewed::Amended);
+                    }
+                },
+                Review::Leave => return Ok(Reviewed::Left),
+                Review::Quit => return Ok(Reviewed::Quit),
+            };
+            // A refusal changes nothing; Down off the last record is the one
+            // motion that ends review, and it is the way back to the prompt.
+            match trail.step(at, motion) {
+                Some(Position::Live) => return Ok(Reviewed::Left),
+                Some(next) => at = next,
+                None => {}
+            }
+        }
+    }
+
+    /// Take a review pass from a prompt that settles no step of its own — an
+    /// acquire, a command, a boundary. `Some` is a conclusion to return, `None`
+    /// means review ended and the prompt is to be put again.
+    fn reviewed(&mut self) -> Result<Option<Conclusion>, RunnerError> {
+        match self.review()? {
+            Reviewed::Amended => Ok(Some(Conclusion::Restarting)),
+            Reviewed::Quit => self
+                .record_stop()
+                .map(Some),
+            Reviewed::Left => Ok(None),
+        }
+    }
+
+    /// Withdraw a recorded value. The `Revoke` reaches the file before the
+    /// restart, so a crash in between leaves a resumable state that redoes the
+    /// step rather than one that has lost the amendment.
+    ///
+    /// Nothing is collected here: correcting a value is a `Revoke` plus
+    /// ordinary re-execution. The walk restarts, replays what still stands,
+    /// arrives at the step and prompts exactly as it did the first time.
+    fn revoke(&mut self, serial: Serial, qualified: &str) -> Result<(), RunnerError> {
+        self.stamp(serial, qualified, State::Revoke)
+    }
+
+    /// Withdraw a recorded value and say what replaces it. The verdict is held
+    /// in memory across the restart and settles the position when the replay
+    /// reaches it; a crash in between leaves the `Revoke` on disk, so the
+    /// position is redone by asking rather than silently keeping the old value.
+    fn amend(
+        &mut self,
+        serial: Serial,
+        qualified: &str,
+        verdict: UserInput,
+    ) -> Result<(), RunnerError> {
+        self.revoke(serial, qualified)?;
+        self.amending = Some((serial, verdict));
+        Ok(())
+    }
+
+    /// Stand at a position the walk is replaying. The records it wrote the
+    /// first time are already in the trail, so review reaches it without the
+    /// replay having to announce itself.
+    fn enter_replayed(&mut self, serial: Serial) {
+        self.serial = serial;
+    }
+
+    /// Show a replayed position's recorded verdict.
+    fn leave_replayed(
+        &mut self,
+        serial: Serial,
+        qualified: &str,
+        marker: &'static str,
+        verdict: &UserInput,
+    ) {
+        let _ = serial;
+        self.driver
+            .show_verdict(marker, qualified, verdict);
+    }
+
+    /// The actions legal where the walk is standing. `Override` only where a
+    /// child failed; `Edit` is offered wherever there is a value, the UI greying
+    /// it when the value has no editable shape.
+    ///
+    /// Invariant: the set always contains the standing default, so a driver
+    /// that reads the standing rather than the offers can never be handed a
+    /// position where its answer is not on offer.
+    fn offers(&self, standing: Standing) -> Vec<Offer> {
+        let mut offers = vec![Offer::Edit, Offer::Skip, Offer::Fail];
+        if let Standing::Fail = standing {
+            offers.push(Offer::Override);
+        }
+        offers.push(Offer::Quit);
+        offers
+    }
+
+    /// Whether anything has settled behind the live prompt, so `<Up>` steps
+    /// back into review rather than doing nothing.
+    fn reviewable(&self) -> bool {
+        !self
+            .records
+            .is_empty()
+    }
+
+    /// Show a step's text, interpolated against the bindings in scope and
+    /// annotated with any `within` budget enclosing it.
+    fn display_step(&mut self, env: &Environment, source: &language::Scope<'_>, qualified: &str) {
+        let subs = env.substitutions();
+        let step_text = crate::formatting::formatter::render_step(
+            source,
+            &subs,
+            self.driver
+                .renderer(),
+        );
+        let depth = self
+            .path
+            .depth();
+        let text = render_constraints(&self.constraints).unwrap_or_default();
+        self.driver
+            .step(qualified, &text, &step_text, depth);
     }
 
     /// Show a named procedure's heading on descent: the driver's `↘` enter line
@@ -1583,21 +2151,172 @@ impl<'i, D: Driver> Runner<'i, D> {
         }
     }
 
+    /// Append one line to the trail, stamped with the moment it happened, the
+    /// identifier of the run writing it, and the serial of the scope the walk
+    /// is standing in. Every record the walk emits goes through here.
+    fn record(&mut self, qualified: &str, state: State) -> Result<(), RunnerError> {
+        let serial = self.serial;
+        self.stamp(serial, qualified, state)
+    }
+
+    /// Append a record bracketing no scope — the run lifecycle events at the
+    /// root path, which wear serial `000` however deep the walk had reached.
+    fn record_lifecycle(&mut self, state: State) -> Result<(), RunnerError> {
+        self.stamp(Serial::LIFECYCLE, "/", state)
+    }
+
+    fn stamp(&mut self, serial: Serial, qualified: &str, state: State) -> Result<(), RunnerError> {
+        if self.replaying() {
+            return Ok(());
+        }
+        let run_id = self
+            .appender
+            .run_id();
+        let record = Record {
+            recorded: now_iso8601(),
+            run_id,
+            serial,
+            path: qualified.to_string(),
+            state,
+        };
+        // A record the trail already states, still truly, stands as it is.
+        if !self
+            .ledger
+            .carries(&record)
+        {
+            self.appender
+                .append(&record)?;
+            self.records
+                .push(record.clone());
+        }
+        self.ledger
+            .apply(&record);
+        Ok(())
+    }
+
+    /// Close a scope: its `Bind` if it bound anything, then its outcome. At
+    /// most one `Bind` per entry, so the fold assigns rather than accumulates.
+    fn record_outcome(&mut self, qualified: &str, state: State) -> Result<(), RunnerError> {
+        if !self
+            .bound
+            .is_empty()
+        {
+            let bound = std::mem::take(&mut self.bound);
+            self.record(qualified, State::Bind(bound))?;
+        }
+        self.record(qualified, state)
+    }
+
+    /// Note a binding the current scope made, for its `Bind` record. A
+    /// binding's own value is unit; this is where the value it captured is
+    /// kept so a replay can restore it.
+    fn note_binding(&mut self, name: &str, value: &Value) {
+        if self.replaying() {
+            return;
+        }
+        self.bound
+            .push(Supplied {
+                value: value.clone(),
+                name: Some(name.to_string()),
+            });
+    }
+
+    /// What a prior walk left at this position, as it bears on the walk
+    /// arriving here now. `reads` is what the node reads at this moment.
+    fn recall(&self, qualified: &str, reads: &[Supplied]) -> Recall {
+        let entry = match self
+            .ledger
+            .look(self.serial, qualified)
+        {
+            Some(entry) => entry,
+            None => return Recall::Nothing,
+        };
+        if self
+            .entered
+            .contains(&entry.serial)
+        {
+            return Recall::Nothing;
+        }
+        let outcome = match &entry.outcome {
+            Some(outcome) => outcome,
+            None => return Recall::Nothing,
+        };
+        if entry.began != reads {
+            return Recall::Stale;
+        }
+        Recall::Valid(
+            entry.serial,
+            outcome.clone(),
+            entry
+                .bound
+                .clone(),
+        )
+    }
+
+    /// Whether the walk is replaying a completed scope. Guards every prompt
+    /// and every append, so a replay shows what was done without doing it
+    /// again.
+    fn replaying(&self) -> bool {
+        self.replaying > 0
+    }
+
+    /// Walk a completed scope's body for display alone. Recorded bindings are
+    /// re-established afterwards, so what the trail says a scope bound wins
+    /// over whatever the replay walk happened to arrive at.
+    fn replay(
+        &mut self,
+        env: &mut Environment,
+        body: &'i Operation<'i>,
+        bound: &[Supplied],
+    ) -> Result<(), RunnerError> {
+        let outer = self.replaying;
+        self.replaying = outer + 1;
+        let result = self.walk(env, body);
+        self.replaying = outer;
+        result?;
+        for item in bound {
+            if let Some(name) = &item.name {
+                env.extend(
+                    name.clone(),
+                    item.value
+                        .clone(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Enter the scope at `qualified` under the scope the walk is standing in,
+    /// taking the serial a prior walk used here if it reached this position and
+    /// a fresh one otherwise. Reuse is what keeps a resumed scope addressing
+    /// its own recorded descendants. The caller restores the enclosing scope's
+    /// serial on the way back out.
+    fn allocate(&mut self, qualified: &str) {
+        let serial = self
+            .ledger
+            .serial_for(self.serial, qualified);
+        // A serial this walk has already entered is another execution of the
+        // same address, not a return to the one recorded there.
+        self.serial = if self
+            .entered
+            .contains(&serial)
+        {
+            self.ledger
+                .next_serial()
+        } else {
+            serial
+        };
+        self.entered
+            .insert(self.serial);
+    }
+
     /// Open a structural scope — the entry procedure, a Section, or an invoked
     /// procedure — pairing with the `Done` its `seal_scope` records on close, so
     /// every scope's address is bracketed `Begin`…`Done` just as a step's is.
     fn begin_scope(&mut self, qualified: &str, supplied: Vec<Supplied>) -> Result<(), RunnerError> {
-        let run_id = self
-            .appender
-            .run_id();
-        self.appender
-            .append(&Record {
-                recorded: now_iso8601(),
-                run_id,
-                path: qualified.to_string(),
-                state: State::Begin(supplied),
-            })?;
-        Ok(())
+        self.allocate(qualified);
+        self.opening = "\u{2198}";
+        self.record(qualified, State::Begin(supplied))
     }
 
     /// At a procedure's entry, restore its parameter bindings from a prior
@@ -1612,9 +2331,14 @@ impl<'i, D: Driver> Runner<'i, D> {
         params: &[language::Identifier<'i>],
     ) -> Result<Vec<Supplied>, RunnerError> {
         if let Some(supplied) = self
-            .inputs
-            .get(qualified)
-            .cloned()
+            .ledger
+            .look(self.serial, qualified)
+            .filter(|entry| !entry.revoked)
+            .map(|entry| {
+                entry
+                    .began
+                    .clone()
+            })
         {
             for item in supplied.iter() {
                 if let Some(name) = &item.name {
@@ -1651,31 +2375,34 @@ impl<'i, D: Driver> Runner<'i, D> {
         outcome: Outcome,
         kind: Kind,
     ) -> Result<Conclusion, RunnerError> {
+        if self.replaying() {
+            return Ok(Conclusion::Completed(outcome));
+        }
         let standing = match &outcome {
             Outcome::Fail(_) => Some(Standing::Fail),
             Outcome::Skip(_) => Some(Standing::Skip),
             _ => None,
         };
         if let Some(standing) = standing {
-            let input = self
-                .driver
-                .overrule(qualified, "↙", standing);
+            let question = Question {
+                qualified,
+                marker: "↙",
+                standing,
+                kind,
+                produced: Value::Unitus,
+                reviewable: self.reviewable(),
+            };
+            let input = match self.settle(question, &[], "↙")? {
+                Some(input) => input,
+                None => return Ok(Conclusion::Restarting),
+            };
             if let UserInput::Quit = input {
                 return self.record_stop();
             }
             self.driver
                 .show_verdict("↙", qualified, &input);
             let settled = outcome_from(input);
-            let record = Record {
-                recorded: now_iso8601(),
-                run_id: self
-                    .appender
-                    .run_id(),
-                path: qualified.to_string(),
-                state: record_state(&settled),
-            };
-            self.appender
-                .append(&record)?;
+            self.record_outcome(qualified, record_state(&settled))?;
             return Ok(settled);
         }
         let produced = match outcome {
@@ -1683,12 +2410,18 @@ impl<'i, D: Driver> Runner<'i, D> {
             _ => Value::Unitus,
         };
         let propagate = produced.clone();
-        let run_id = self
-            .appender
-            .run_id();
-        let input = self
-            .driver
-            .seal(qualified, produced, kind);
+        let question = Question {
+            qualified,
+            marker: "↙",
+            standing: Standing::Done,
+            kind,
+            produced,
+            reviewable: self.reviewable(),
+        };
+        let input = match self.settle(question, &[], "↙")? {
+            Some(input) => input,
+            None => return Ok(Conclusion::Restarting),
+        };
         if let UserInput::Quit = input {
             return self.record_stop();
         }
@@ -1698,66 +2431,36 @@ impl<'i, D: Driver> Runner<'i, D> {
             UserInput::Skip => Conclusion::Completed(Outcome::Skip(propagate)),
             other => outcome_from(other),
         };
-        let record = Record {
-            recorded: now_iso8601(),
-            run_id,
-            path: qualified.to_string(),
-            state: record_state(&conclusion),
-        };
-        self.appender
-            .append(&record)?;
+        self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
     }
 
     /// Record an invocation declined at its acquire prompt: Skip and Fail
-    /// record the call's outcome at `qualified`; Quit stops the run.
-    fn abandon(&mut self, qualified: &str, input: UserInput) -> Result<Conclusion, RunnerError> {
+    /// bracket the call at `qualified`, its `Begin` stating the arguments
+    /// gathered before the decline; Quit stops the run.
+    fn abandon(
+        &mut self,
+        qualified: &str,
+        supplied: Vec<Supplied>,
+        input: UserInput,
+    ) -> Result<Conclusion, RunnerError> {
         if let UserInput::Quit = input {
             return self.record_stop();
         }
+        self.begin_scope(qualified, supplied)?;
         let conclusion = outcome_from(input);
-        let run_id = self
-            .appender
-            .run_id();
-        self.appender
-            .append(&Record {
-                recorded: now_iso8601(),
-                run_id,
-                path: qualified.to_string(),
-                state: record_state(&conclusion),
-            })?;
+        self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
     }
 
     /// Record a `Finish` at the root path, closing a run that walked to its end.
     fn record_finish(&mut self) -> Result<(), RunnerError> {
-        let run_id = self
-            .appender
-            .run_id();
-        let record = Record {
-            recorded: now_iso8601(),
-            run_id,
-            path: "/".to_string(),
-            state: State::Finish,
-        };
-        self.appender
-            .append(&record)?;
-        Ok(())
+        self.record_lifecycle(State::Finish)
     }
 
     /// Record a deliberate Stop at the root path and unwind the walk.
     fn record_stop(&mut self) -> Result<Conclusion, RunnerError> {
-        let run_id = self
-            .appender
-            .run_id();
-        let suspend = Record {
-            recorded: now_iso8601(),
-            run_id,
-            path: "/".to_string(),
-            state: State::Stop,
-        };
-        self.appender
-            .append(&suspend)?;
+        self.record_lifecycle(State::Stop)?;
         Ok(Conclusion::Stopping)
     }
 
@@ -1901,6 +2604,8 @@ fn outcome_from(input: UserInput) -> Conclusion {
         UserInput::Skip => Conclusion::Completed(Outcome::Skip(Value::Unitus)),
         UserInput::Fail(reason) => Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason))),
         UserInput::Quit => Conclusion::Stopping,
+        // Review is handled at the prompt and never settles a node
+        UserInput::Review => unreachable!(),
     }
 }
 
@@ -1912,7 +2617,11 @@ fn verdict_from(conclusion: &Conclusion) -> UserInput {
     match conclusion {
         Conclusion::Completed(Outcome::Done(_)) => UserInput::Done(Value::Unitus),
         Conclusion::Completed(Outcome::Skip(_)) => UserInput::Skip,
-        _ => UserInput::Fail(String::new()),
+        Conclusion::Completed(Outcome::Fail(_)) | Conclusion::Throwing(_) => {
+            UserInput::Fail(String::new())
+        }
+        // An unwinding walk shows no closing verdict
+        Conclusion::Stopping | Conclusion::Restarting => UserInput::Quit,
     }
 }
 
@@ -1934,7 +2643,203 @@ fn record_state(conclusion: &Conclusion) -> State {
                 State::Fail(Some(crate::engraving::fail_reason(reason)))
             }
         }
-        Conclusion::Stopping => unreachable!(), // Stop is recorded as a lifecycle event, not a step result
+        // A stop is recorded as a lifecycle event, not a step result, and a
+        // restart records nothing at all
+        Conclusion::Stopping | Conclusion::Restarting => unreachable!(),
+    }
+}
+
+/// A loop iteration a prior walk recorded, waiting to be claimed by an item
+/// matching it.
+struct Iteration {
+    number: usize,
+    began: Vec<Supplied>,
+    complete: bool,
+}
+
+/// The index an item runs at: the first unclaimed recorded iteration whose
+/// `Begin` states that item, preferring a completed one so a run interrupted
+/// mid-iteration resumes without redoing its finished sibling. An item
+/// matching nothing takes the next index, numeric maximum plus one — key
+/// order would hand back `[9]` from a scope holding `[10]`, since `[10]`
+/// sorts between `[1]` and `[2]`.
+///
+/// The claimed entry leaves the pool, which is what preserves multiplicity:
+/// two identical items are two executions and cannot collapse onto one
+/// recorded iteration. Reuse is otherwise best-effort — declining to match
+/// merely costs redundant work — but collapsing would report work as done
+/// that was never performed.
+fn claim_iteration(pool: &mut Vec<Iteration>, wanted: &[Supplied], highest: &mut usize) -> usize {
+    let states = |item: &Iteration| item.began == wanted;
+    let chosen = pool
+        .iter()
+        .position(|item| item.complete && states(item))
+        .or_else(|| {
+            pool.iter()
+                .position(states)
+        });
+    match chosen {
+        Some(at) => {
+            pool.remove(at)
+                .number
+        }
+        None => {
+            *highest += 1;
+            *highest
+        }
+    }
+}
+
+/// The loop variables bound for this pass, in the form an iteration's `Begin`
+/// states them. Empty for `repeat`, which binds nothing.
+fn iteration_values(names: &[language::Identifier], env: &Environment) -> Vec<Supplied> {
+    names
+        .iter()
+        .filter_map(|name| {
+            env.lookup(name.value)
+                .map(|value| Supplied {
+                    value: value.clone(),
+                    name: Some(
+                        name.value
+                            .to_string(),
+                    ),
+                })
+        })
+        .collect()
+}
+
+/// The actions on offer at a reviewed position: the ones it was answered with,
+/// so changing an answer means giving a different one. A frame the walk never
+/// asked about has no answer to change, leaving only Quit.
+fn reviewing(settled: Option<&UserInput>) -> Vec<Offer> {
+    let mut offers = Vec::new();
+    if let Some(verdict) = settled {
+        offers.push(Offer::Edit);
+        offers.push(Offer::Skip);
+        offers.push(Offer::Fail);
+        if let UserInput::Fail(_) = verdict {
+            offers.push(Offer::Override);
+        }
+    }
+    offers.push(Offer::Quit);
+    offers
+}
+
+/// How a spell in the review cursor ended.
+enum Reviewed {
+    /// Back to the live prompt, which the walker re-issues.
+    Left,
+    /// A recorded value was withdrawn; the walk restarts.
+    Amended,
+    /// Stop the run.
+    Quit,
+}
+
+/// The standing an offer set was built for, read back so a re-issued prompt
+/// keeps it. `Override` is offered only where a child failed.
+fn offers_standing(offers: &[Offer]) -> Standing {
+    if offers.contains(&Offer::Override) {
+        Standing::Fail
+    } else {
+        Standing::Done
+    }
+}
+
+/// What a prior walk left at a position the walk has arrived at again.
+enum Recall {
+    /// Nothing that applies: never reached, left unfinished, or a scope this
+    /// walk entered itself.
+    Nothing,
+    /// Completed, and the values the node reads now are the ones its `Begin`
+    /// recorded, so the work stands: its serial, outcome, and bindings.
+    Valid(Serial, State, Vec<Supplied>),
+    /// Completed, but an input has been amended since. This is the whole of
+    /// staleness propagation — the node is redone, and redoing it invalidates
+    /// its own consumers in turn, with nothing computed or stored beyond the
+    /// amendment itself.
+    Stale,
+}
+
+/// The value a recorded outcome settled on. Skip and Fail carry none.
+fn value_of(state: &State) -> Value {
+    match state {
+        State::Done(Some(value)) => value.clone(),
+        _ => Value::Unitus,
+    }
+}
+
+/// The verdict a recorded outcome stands for, so a replayed scope can show
+/// what it settled on where it took its prompt the first time.
+/// The verdict a record states, where it states one. A record that is not an
+/// outcome has none, and offers nothing to amend.
+fn settled_by(state: &State) -> Option<UserInput> {
+    match state {
+        State::Done(value) => Some(UserInput::Done(match value {
+            Some(value) => value.clone(),
+            None => Value::Unitus,
+        })),
+        State::Skip => Some(UserInput::Skip),
+        State::Fail(reason) => Some(UserInput::Fail(match reason {
+            Some(value) => value.to_string(),
+            None => String::new(),
+        })),
+        _ => None,
+    }
+}
+
+/// The marker a record is drawn with, matching the one the live trace used.
+/// The path says what kind of thing stands there — the grammar being read back
+/// is `render_segment` in `path.rs` — and the state says whether this is the
+/// way in or the way out. A dispatch is neither: it stands at the *caller's*
+/// path, so nothing but its own state names it.
+fn marker_of(record: &Record) -> &'static str {
+    if let State::Invoke(target) = &record.state {
+        return match target {
+            InvokeTarget::Uri(_) => "\u{21d2}",
+            InvokeTarget::Procedure(_) => "\u{2192}",
+        };
+    }
+    let leaving = match record.state {
+        State::Done(_) | State::Skip | State::Fail(_) | State::Finish | State::Stop => true,
+        _ => false,
+    };
+    let edge = record
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    // The run's own boundary, and a call that leaves the document for another
+    // Technique, are the only crossings drawn with the double arrows.
+    if record.path == "/" || (edge.starts_with('<') && edge.ends_with('>')) {
+        return match leaving {
+            true => "\u{21d0}",
+            false => "\u{21d2}",
+        };
+    }
+    // What encloses other work is entered and left: a procedure ends in a
+    // colon, a section is an upper-case Roman numeral, an iteration is
+    // bracketed. A step is an arrow throughout.
+    let nests = edge.ends_with(':')
+        || (edge.starts_with('[') && edge.ends_with(']'))
+        || (!edge.is_empty()
+            && edge
+                .chars()
+                .all(|c| "IVXLCDM".contains(c)));
+    match (nests, leaving) {
+        (true, true) => "\u{2199}",
+        (true, false) => "\u{2198}",
+        (false, _) => "\u{2192}",
+    }
+}
+
+fn verdict_of(state: &State) -> UserInput {
+    match state {
+        State::Skip => UserInput::Skip,
+        State::Fail(reason) => UserInput::Fail(match reason {
+            Some(value) => value.to_string(),
+            None => String::new(),
+        }),
+        _ => UserInput::Done(Value::Unitus),
     }
 }
 
@@ -2057,20 +2962,6 @@ fn binds_descriptively(op: &Operation) -> bool {
             }
             bound
         }
-        _ => false,
-    }
-}
-
-/// Whether a step body nests further executable scopes — a `foreach`/`repeat`
-/// loop or substeps — as opposed to being a leaf of prose, a binding, or a
-/// call. A completed step that nests work is re-walked on resume so bindings
-/// made inside it rehydrate; a leaf is restored from its recorded value alone.
-fn nests_work(op: &Operation) -> bool {
-    match op {
-        Operation::Loop { .. } | Operation::Step { .. } => true,
-        Operation::Sequence(ops, _) => ops
-            .iter()
-            .any(nests_work),
         _ => false,
     }
 }

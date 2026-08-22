@@ -390,6 +390,9 @@ fn measure_times(records: &[Record]) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
             State::Execute { .. } => {
                 executing.insert(path, i);
             }
+            // A revocation withdraws an outcome without bracketing anything,
+            // so it closes no span of its own.
+            State::Revoke => {}
             State::Done(_) | State::Skip | State::Fail(_) => {
                 if let Some(opened) = begun.remove(path) {
                     spans[i] = elapsed(stamps[opened], stamps[i]);
@@ -405,7 +408,9 @@ fn measure_times(records: &[Record]) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
                     spans[i] = elapsed(stamps[opened], stamps[i]);
                 }
             }
-            State::Resume | State::Invoke(_) => {}
+            // A Bind sits immediately before its scope's outcome, so it
+            // brackets no interval of its own.
+            State::Resume | State::Invoke(_) | State::Bind(_) => {}
         }
     }
 
@@ -450,9 +455,11 @@ fn keyword(state: &State) -> &'static str {
         State::Execute { .. } => "Execute",
         State::Return(_) => "Return",
         State::Begin(_) => "Begin",
+        State::Bind(_) => "Bind",
         State::Done(_) => "Done",
         State::Skip => "Skip",
         State::Fail(_) => "Fail",
+        State::Revoke => "Revoke",
     }
 }
 
@@ -467,12 +474,12 @@ fn payload(state: &State) -> Option<String> {
         State::Return(value) | State::Done(value) | State::Fail(value) => value
             .as_ref()
             .map(serialize_value),
-        State::Begin(supplied) => {
+        State::Begin(supplied) | State::Bind(supplied) => {
             let mut text = String::new();
             format_supplied(&mut text, supplied);
             Some(text)
         }
-        State::Finish | State::Stop | State::Resume | State::Skip => None,
+        State::Finish | State::Stop | State::Resume | State::Skip | State::Revoke => None,
     }
 }
 

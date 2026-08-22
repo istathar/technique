@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use technique::engraving::Appender;
+use technique::engraving::{Appender, Ledger};
 use technique::parsing;
 use technique::runner::{Conclusion, Context, Environment, Headless, Library, Outcome, Runner};
 use technique::translation;
@@ -23,6 +22,48 @@ fn strip_timestamp_and_runid(trail: &str) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+// Rewrite an expected trail from a freshly captured walk. The head line and
+// the run identifier are taken from the existing file; the timestamps are the
+// ones the capture just wrote.
+fn regenerate(path: &Path, existing: &str, captured: &str) {
+    let head = existing
+        .lines()
+        .next()
+        .expect("expected trail has a Start line");
+    let run_id = head
+        .split(' ')
+        .nth(1)
+        .expect("Start line carries a run identifier");
+    let opening = head
+        .find("/ Start ")
+        .map(|i| &head[i..])
+        .expect("Start line names the document");
+    let opened = captured
+        .lines()
+        .next()
+        .and_then(|line| {
+            line.split(' ')
+                .next()
+        })
+        .expect("capture has at least one record");
+
+    let mut out = String::new();
+    out.push_str(&format!("{} {} 000 {}\n", opened, run_id, opening));
+    for line in captured.lines() {
+        let mut fields = line.splitn(3, ' ');
+        let recorded = fields
+            .next()
+            .unwrap_or_default();
+        let _ = fields.next();
+        let tail = fields
+            .next()
+            .unwrap_or_default();
+        out.push_str(&format!("{} {} {}\n", recorded, run_id, tail));
+    }
+    fs::write(path, out).expect("rewrite expected trail");
+    println!("regenerated {:?}", path);
 }
 
 /// Run every sample to completion headless, capturing the trail in memory,
@@ -79,7 +120,7 @@ fn ensure_run() {
         let mut runner = Runner::new(
             &program,
             Appender::memory(),
-            HashMap::new(),
+            Ledger::new(),
             Headless::new(),
             library,
         )
@@ -92,11 +133,11 @@ fn ensure_run() {
                 continue;
             }
         };
-        let recorded = strip_timestamp_and_runid(
-            runner
-                .into_appender()
-                .contents(),
-        );
+        let captured = runner
+            .into_appender()
+            .contents()
+            .to_string();
+        let recorded = strip_timestamp_and_runid(&captured);
 
         // The expected file is a complete, valid PFFTT trail; its first line
         // is the opening Start lifecycle record, which the in-memory walk
@@ -109,6 +150,16 @@ fn ensure_run() {
                 expected_path, e
             )
         });
+        // A change to what the walk records means every expected trail has to
+        // be rewritten. Set TECHNIQUE_REGENERATE to have this test emit the
+        // walk it just captured, keeping the trail's existing `Start` line and
+        // run identifier so the file stays the run it has always been. Read
+        // the diff before committing it.
+        if std::env::var("TECHNIQUE_REGENERATE").is_ok() {
+            regenerate(&expected_path, &expected_text, &captured);
+            continue;
+        }
+
         let expected: Vec<String> = strip_timestamp_and_runid(&expected_text)
             .into_iter()
             .skip(1)

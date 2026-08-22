@@ -1,10 +1,47 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::runner::driver::{
-    Automatic, Console, Driver, Event, Kind, Mock, Prompt, Standing, UserInput, draw, draw_action,
-    edit, is_list_forma,
+    Automatic, Console, Driver, Event, Kind, Mock, Offer, Prompt, Question, Standing, UserInput,
+    draw, draw_action, edit, is_list_forma,
 };
 use crate::value::{Numeric, Value};
+
+// The offer set a step's verdict prompt carries: everything but Override,
+// which only a rolled-up failure lights up.
+const STEP: [Offer; 4] = [Offer::Edit, Offer::Skip, Offer::Fail, Offer::Quit];
+
+// The offer set at a node whose body rolled up to a failure.
+const FAILED: [Offer; 5] = [
+    Offer::Edit,
+    Offer::Skip,
+    Offer::Fail,
+    Offer::Override,
+    Offer::Quit,
+];
+
+// A step's verdict prompt, standing at Done.
+fn asking(qualified: &str, kind: Kind, produced: Value) -> Question<'_> {
+    Question {
+        qualified,
+        marker: "→",
+        standing: Standing::Done,
+        kind,
+        produced,
+        reviewable: false,
+    }
+}
+
+// A scope's close, standing at Done.
+fn sealing(qualified: &str, kind: Kind) -> Question<'_> {
+    Question {
+        qualified,
+        marker: "↙",
+        standing: Standing::Done,
+        kind,
+        produced: Value::Unitus,
+        reviewable: false,
+    }
+}
 
 #[test]
 fn mock_returns_canned_answers_in_order() {
@@ -14,15 +51,15 @@ fn mock_returns_canned_answers_in_order() {
         UserInput::Quit,
     ]);
     assert_eq!(
-        p.ask("/I/1", &[], Value::Unitus, Kind::Computable),
+        p.ask(asking("/I/1", Kind::Computable, Value::Unitus), &[], &STEP),
         UserInput::Done(Value::Unitus)
     );
     assert_eq!(
-        p.ask("/I/1", &[], Value::Unitus, Kind::Computable),
+        p.ask(asking("/I/1", Kind::Computable, Value::Unitus), &[], &STEP),
         UserInput::Skip
     );
     assert_eq!(
-        p.ask("/I/1", &[], Value::Unitus, Kind::Computable),
+        p.ask(asking("/I/1", Kind::Computable, Value::Unitus), &[], &STEP),
         UserInput::Quit
     );
 }
@@ -31,7 +68,11 @@ fn mock_returns_canned_answers_in_order() {
 fn mock_records_step_and_ask_events() {
     let mut p = Mock::with_answers([UserInput::Done(Value::Unitus)]);
     p.step("/local_network:I/1", "", "Check the cable.", 1);
-    let _ = p.ask("/local_network:I/1", &[], Value::Unitus, Kind::Computable);
+    let _ = p.ask(
+        asking("/local_network:I/1", Kind::Computable, Value::Unitus),
+        &[],
+        &STEP,
+    );
     assert_eq!(
         p.events(),
         &[
@@ -41,6 +82,7 @@ fn mock_records_step_and_ask_events() {
             },
             Event::Ask {
                 qualified: "/local_network:I/1".to_string(),
+                marker: "→".to_string(),
                 choices: vec![],
             },
         ]
@@ -50,11 +92,16 @@ fn mock_records_step_and_ask_events() {
 #[test]
 fn mock_records_offered_choices() {
     let mut p = Mock::with_answers([UserInput::Done(Value::Literali("Yes".to_string()))]);
-    let _ = p.ask("I/1", &["Yes", "No"], Value::Unitus, Kind::Computable);
+    let _ = p.ask(
+        asking("I/1", Kind::Computable, Value::Unitus),
+        &["Yes", "No"],
+        &STEP,
+    );
     assert_eq!(
         p.events(),
         &[Event::Ask {
             qualified: "I/1".to_string(),
+            marker: "→".to_string(),
             choices: vec!["Yes".to_string(), "No".to_string()],
         }]
     );
@@ -80,7 +127,7 @@ fn mock_records_enter_and_announce() {
 #[should_panic(expected = "Mock::ask called with no canned answers remaining")]
 fn mock_ask_without_answers_panics() {
     let mut p = Mock::new();
-    let _ = p.ask("I/1", &[], Value::Unitus, Kind::Computable);
+    let _ = p.ask(asking("I/1", Kind::Computable, Value::Unitus), &[], &STEP);
 }
 
 #[test]
@@ -111,22 +158,24 @@ fn automatic_settles_done_when_computable_skip_otherwise() {
     let mut p = Automatic::with_handle(Vec::new());
     assert_eq!(
         p.ask(
-            "/I/1",
+            asking("/I/1", Kind::Computable, Value::Literali("ran".to_string())),
             &[],
-            Value::Literali("ran".to_string()),
-            Kind::Computable
+            &STEP
         ),
         UserInput::Done(Value::Literali("ran".to_string()))
     );
     assert_eq!(
-        p.ask("/I/2", &[], Value::Unitus, Kind::Prose),
+        p.ask(asking("/I/2", Kind::Prose, Value::Unitus), &[], &STEP),
         UserInput::Skip
     );
     assert_eq!(
-        p.seal("/I", Value::Unitus, Kind::Computable),
+        p.ask(sealing("/I", Kind::Computable), &[], &STEP),
         UserInput::Done(Value::Unitus)
     );
-    assert_eq!(p.seal("/II", Value::Unitus, Kind::Prose), UserInput::Skip);
+    assert_eq!(
+        p.ask(sealing("/II", Kind::Prose), &[], &STEP),
+        UserInput::Skip
+    );
 }
 
 #[test]
@@ -145,19 +194,22 @@ fn automatic_declines_action_and_choice_as_skip() {
         UserInput::Skip
     );
     assert_eq!(
-        p.ask("/I/2", &["Yes", "No"], Value::Unitus, Kind::Choice),
+        p.ask(
+            asking("/I/2", Kind::Choice, Value::Unitus),
+            &["Yes", "No"],
+            &STEP
+        ),
         UserInput::Skip
     );
     assert_eq!(
-        p.ask("/I/3", &[], Value::Unitus, Kind::Action),
+        p.ask(asking("/I/3", Kind::Action, Value::Unitus), &[], &STEP),
         UserInput::Skip
     );
     assert_eq!(
         p.ask(
-            "/I/4",
+            asking("/I/4", Kind::System, Value::Literali("out".to_string())),
             &[],
-            Value::Literali("out".to_string()),
-            Kind::System
+            &STEP
         ),
         UserInput::Done(Value::Literali("out".to_string()))
     );
@@ -202,7 +254,7 @@ fn console_enter_writes_fqn() {
 fn default_enter_completes_with_produced() {
     // The default is confirmation: Enter accepts the body's value intact, so
     // an untouched Unitus stays Unitus, not Literali("").
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         Some(UserInput::Done(Value::Unitus))
@@ -213,7 +265,7 @@ fn default_enter_completes_with_produced() {
 fn overrule_fail_enter_propagates() {
     // At a failed sign-off the default is the failure itself: a bare Enter
     // settles Fail and never silently lifts it.
-    let mut it = Prompt::overrule(Standing::Fail);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Fail, &FAILED);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         Some(UserInput::Fail(String::new()))
@@ -224,7 +276,7 @@ fn overrule_fail_enter_propagates() {
 fn overrule_fail_menu_o_overrides() {
     // Override is reachable only deliberately — from the menu — and settles as
     // Override, which the runner lifts to a rollup-severing Done.
-    let mut it = Prompt::overrule(Standing::Fail);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Fail, &FAILED);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
@@ -235,7 +287,7 @@ fn overrule_fail_menu_o_overrides() {
 #[test]
 fn overrule_skip_enter_propagates() {
     // An all-skipped scope defaults to Skip, not Done.
-    let mut it = Prompt::overrule(Standing::Skip);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Skip, &STEP);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         Some(UserInput::Skip)
@@ -246,7 +298,7 @@ fn overrule_skip_enter_propagates() {
 fn override_inert_without_a_failure() {
     // A Skip standing has nothing to override, so the menu's `o` is greyed and
     // does nothing.
-    let mut it = Prompt::overrule(Standing::Skip);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Skip, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
@@ -258,7 +310,12 @@ fn override_inert_without_a_failure() {
 fn esc_edit_typed_enter_returns_literali() {
     // Editing is opt-in: Esc -> Edit (the first menu item) opens the buffer
     // seeded from the value, which the user can then extend.
-    let mut it = Prompt::begin(&[], Value::Literali("eth".to_string()));
+    let mut it = Prompt::begin(
+        &[],
+        Value::Literali("eth".to_string()),
+        Standing::Done,
+        &STEP,
+    );
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -277,7 +334,12 @@ fn esc_edit_typed_enter_returns_literali() {
 #[test]
 fn esc_edit_seeds_buffer_and_backspace_trims() {
     // Edit seeds the buffer from the produced value, cursor at the end.
-    let mut it = Prompt::begin(&[], Value::Literali("abc".to_string()));
+    let mut it = Prompt::begin(
+        &[],
+        Value::Literali("abc".to_string()),
+        Standing::Done,
+        &STEP,
+    );
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
@@ -296,7 +358,7 @@ fn quanticle_edit_roundtrips() {
 
     // Editing a numeric value and changing it keeps it numeric: 42 -> 43 is
     // re-parsed back to a Quanticle, not flattened to text.
-    let mut it = Prompt::begin(&[], quanticle());
+    let mut it = Prompt::begin(&[], quanticle(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -311,7 +373,7 @@ fn quanticle_edit_roundtrips() {
 
     // Entering and leaving the edit without a change returns the original
     // numeric value untouched.
-    let mut it = Prompt::begin(&[], quanticle());
+    let mut it = Prompt::begin(&[], quanticle(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
@@ -321,7 +383,7 @@ fn quanticle_edit_roundtrips() {
 
     // A numeric value edited into something that is not a number is not
     // accepted: Enter stays in the edit so it can be corrected.
-    let mut it = Prompt::begin(&[], quanticle());
+    let mut it = Prompt::begin(&[], quanticle(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
@@ -336,7 +398,7 @@ fn esc_menu_navigates_edit_skip_fail_quit() {
     // For an editable scalar the menu is edit, skip, fail, quit in order.
     let editable = || Value::Literali("eth0".to_string());
 
-    let mut it = Prompt::begin(&[], editable());
+    let mut it = Prompt::begin(&[], editable(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
@@ -344,7 +406,7 @@ fn esc_menu_navigates_edit_skip_fail_quit() {
         Some(UserInput::Skip)
     );
 
-    let mut it = Prompt::begin(&[], editable());
+    let mut it = Prompt::begin(&[], editable(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -360,7 +422,7 @@ fn esc_menu_navigates_edit_skip_fail_quit() {
         Some(UserInput::Fail("no".to_string()))
     );
 
-    let mut it = Prompt::begin(&[], editable());
+    let mut it = Prompt::begin(&[], editable(), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     // Right past the end clamps on quit.
     for _ in 0..5 {
@@ -376,7 +438,7 @@ fn esc_menu_navigates_edit_skip_fail_quit() {
 fn esc_menu_disables_edit_for_unit_and_complex() {
     // Neither a Unit step (pure confirmation) nor a complex value is
     // inline-editable, so Edit is greyed and the menu opens on Skip.
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -384,7 +446,7 @@ fn esc_menu_disables_edit_for_unit_and_complex() {
     );
 
     let tablet = Value::Tabularum(vec![("k".to_string(), Value::Unitus)]);
-    let mut it = Prompt::begin(&[], tablet);
+    let mut it = Prompt::begin(&[], tablet, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -397,7 +459,7 @@ fn action_response_label_is_coloured() {
     // A response literal argument (e.g. `scroll('BOTTOM')`) shows on the action
     // line in the Response orange (0xf5, 0x79, 0x00), not the default white a
     // plain string label gets.
-    let it = Prompt::begin(&[], Value::Unitus);
+    let it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
 
     let mut out: Vec<u8> = Vec::new();
     draw_action(
@@ -430,7 +492,7 @@ fn action_response_label_is_coloured() {
 fn menu_shows_greyed_edit_when_unavailable() {
     // Edit is always listed so it stays discoverable; for a non-editable value
     // it is drawn (greyed) alongside the exits, and the menu opens on Skip.
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let mut out: Vec<u8> = Vec::new();
     draw(&mut out, "I/1", "→", &it).expect("draw");
@@ -444,7 +506,12 @@ fn fail_reason_backs_out_through_menu_to_field() {
     // Fail opens the reason submenu; Esc closes it back to the menu (Fail still
     // selectable), and a second Esc returns to the untouched frozen value, so
     // Enter still completes the step with its produced value intact.
-    let mut it = Prompt::begin(&[], Value::Literali("eth0".to_string()));
+    let mut it = Prompt::begin(
+        &[],
+        Value::Literali("eth0".to_string()),
+        Standing::Done,
+        &STEP,
+    );
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -469,7 +536,7 @@ fn fail_reason_backs_out_through_menu_to_field() {
 #[test]
 fn fail_reason_reopens_empty_after_abandon() {
     // Abandoning a reason discards its text; reopening Fail starts fresh.
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -486,7 +553,7 @@ fn fail_reason_reopens_empty_after_abandon() {
 
 #[test]
 fn esc_menu_backs_out_to_field() {
-    let mut it = Prompt::begin(&[], Value::Literali("x".to_string()));
+    let mut it = Prompt::begin(&[], Value::Literali("x".to_string()), Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     // Esc out of the menu returns to the frozen value; Enter accepts it intact.
     assert_eq!(
@@ -501,9 +568,9 @@ fn esc_menu_backs_out_to_field() {
 
 #[test]
 fn choices_navigate_and_accept() {
-    let mut it = Prompt::begin(&["Yes", "No"], Value::Unitus);
+    let mut it = Prompt::begin(&["Yes", "No"], Value::Unitus, Standing::Done, &STEP);
     // First choice is the default.
-    let mut first = Prompt::begin(&["Yes", "No"], Value::Unitus);
+    let mut first = Prompt::begin(&["Yes", "No"], Value::Unitus, Standing::Done, &STEP);
     assert_eq!(
         first.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         Some(UserInput::Done(Value::Literali("Yes".to_string())))
@@ -521,7 +588,7 @@ fn choices_navigate_and_accept() {
 
 #[test]
 fn choices_esc_opens_menu() {
-    let mut it = Prompt::begin(&["Yes", "No"], Value::Unitus);
+    let mut it = Prompt::begin(&["Yes", "No"], Value::Unitus, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -536,7 +603,7 @@ fn read_only_values_accept_intact() {
         "name".to_string(),
         Value::Literali("eth0".to_string()),
     )]);
-    let mut it = Prompt::begin(&[], tablet.clone());
+    let mut it = Prompt::begin(&[], tablet.clone(), Standing::Done, &STEP);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
         None
@@ -547,7 +614,7 @@ fn read_only_values_accept_intact() {
     );
 
     let dump = Value::Literali("1: lo\n2: eth0\n3: wlan0".to_string());
-    let mut it = Prompt::begin(&[], dump.clone());
+    let mut it = Prompt::begin(&[], dump.clone(), Standing::Done, &STEP);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
         None
@@ -564,7 +631,7 @@ fn render_frozen_shows_only_triangle() {
     // prompt line, and the menu options are not advertised — the normal prompt
     // is just the "play" triangle.
     let dump = Value::Literali("1: lo\n2: eth0\n3: wlan0".to_string());
-    let it = Prompt::begin(&[], dump);
+    let it = Prompt::begin(&[], dump, Standing::Done, &STEP);
     let mut out: Vec<u8> = Vec::new();
     draw(&mut out, "I/1", "→", &it).expect("draw");
     let written = String::from_utf8(out).expect("utf8");
@@ -575,7 +642,7 @@ fn render_frozen_shows_only_triangle() {
 
 #[test]
 fn ctrl_c_quits_from_any_field() {
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     assert_eq!(
         it.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         Some(UserInput::Quit)
@@ -584,7 +651,12 @@ fn ctrl_c_quits_from_any_field() {
 
 #[test]
 fn render_edit_shows_candidate_text() {
-    let mut it = Prompt::begin(&[], Value::Literali("hello".to_string()));
+    let mut it = Prompt::begin(
+        &[],
+        Value::Literali("hello".to_string()),
+        Standing::Done,
+        &STEP,
+    );
     // Frozen by default; once edited, the candidate text is shown for editing.
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -598,7 +670,7 @@ fn render_edit_shows_candidate_text() {
 fn render_reason_replaces_menu() {
     // Choosing Fail replaces the menu with the reason prompt on the same line,
     // keeping the ▶ prefix; the menu items are gone, and it stays one line.
-    let mut it = Prompt::begin(&[], Value::Unitus);
+    let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     it.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     it.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -615,7 +687,7 @@ fn render_reason_replaces_menu() {
 
 #[test]
 fn render_choices_lists_options() {
-    let it = Prompt::begin(&["Yes", "No"], Value::Unitus);
+    let it = Prompt::begin(&["Yes", "No"], Value::Unitus, Standing::Done, &STEP);
     let mut out: Vec<u8> = Vec::new();
     draw(&mut out, "I/1", "→", &it).expect("draw");
     let written = String::from_utf8(out).expect("utf8");
@@ -640,6 +712,8 @@ fn list_prompt() -> Prompt {
         menu: None,
         reason: None,
         standing: Standing::Done,
+        offers: STEP.to_vec(),
+        reviewable: false,
     }
 }
 

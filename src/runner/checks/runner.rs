@@ -1,7 +1,8 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::engraving::{Appender, InvokeTarget, State, Store, Supplied, parse_record};
+use crate::engraving::{
+    Appender, InvokeTarget, Ledger, Record, RunId, Serial, State, Store, Supplied, parse_record,
+};
 use crate::language;
 use crate::language::{Identifier, Numeric as LangNumeric};
 use crate::parsing;
@@ -10,7 +11,7 @@ use crate::program::{
     SubroutineRef,
 };
 use crate::resolution::resolve;
-use crate::runner::driver::{Automatic, Event, Mock, Scripted, UserInput};
+use crate::runner::driver::{Automatic, Event, Mock, Offer, Review, Scripted, UserInput};
 use crate::runner::evaluator::Environment;
 use crate::runner::library::Library;
 use crate::runner::runner::{
@@ -138,7 +139,7 @@ fn step_outcomes_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -161,7 +162,7 @@ fn step_outcomes_recorded() {
     assert_eq!(lines.len(), 6);
     assert_eq!(
         lines[0],
-        "2026-05-16T00:00:00Z 000001 / Start file:///tmp/Test.tq"
+        "2026-05-16T00:00:00Z 000001 000 / Start file:///tmp/Test.tq"
     );
     let begin = parse_record(lines[2]).expect("parse begin");
     assert_eq!(begin.path, "/1");
@@ -185,7 +186,7 @@ fn step_outcomes_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -219,7 +220,7 @@ fn step_outcomes_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -264,7 +265,7 @@ fn empty_fail_reason_records_none() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -310,7 +311,7 @@ helper :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         Library::stub(),
     );
@@ -329,6 +330,22 @@ helper :
         .count();
     assert_eq!(invokes, 2, "both call sites should invoke helper");
     assert_eq!(begins, 2, "helper's body should run on both calls");
+
+    // Each execution is its own scope, so each takes its own serial.
+    let serials: Vec<&str> = pfftt
+        .lines()
+        .filter(|line| line.contains("/helper: Begin"))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(2)
+        })
+        .collect();
+    assert_eq!(serials.len(), 2);
+    assert_ne!(
+        serials[0], serials[1],
+        "two executions of one address do not share a serial: {}",
+        pfftt
+    );
 }
 
 #[test]
@@ -356,7 +373,7 @@ fn two_steps_prompted_in_source_order() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -398,16 +415,19 @@ fn pre_completed_step_short_circuits() {
     );
     let program = anonymous_with_body(body);
 
-    // Pre-mark step 1 completed; the walker should skip its prompt
-    // and only ask about step 2.
-    let mut completed = HashMap::new();
-    completed.insert("/1".to_string(), Value::Unitus);
+    // Pre-mark step 1 completed; the walker replays it — shown but not
+    // prompted for — and only asks about step 2.
+    let ledger = ledger_of(&[
+        (1, "/", State::Begin(Vec::new())),
+        (2, "/1", State::Begin(Vec::new())),
+        (2, "/1", State::Done(None)),
+    ]);
 
     let prompt = Mock::with_answers([UserInput::Done(Value::Unitus)]);
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        completed,
+        ledger,
         prompt,
         Library::stub(),
     );
@@ -428,7 +448,90 @@ fn pre_completed_step_short_circuits() {
             }
         })
         .collect();
-    assert_eq!(step_fqns, vec!["/2"]);
+    assert_eq!(step_fqns, vec!["/1", "/2"]);
+
+    let asked: Vec<&str> = prompt
+        .events()
+        .iter()
+        .filter_map(|e| {
+            if let Event::Ask {
+                qualified, marker, ..
+            } = e
+            {
+                if marker == "→" {
+                    Some(qualified.as_str())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(asked, vec!["/2"]);
+}
+
+#[test]
+fn pre_completed_run_replays_writing_nothing() {
+    let mut fixture = StoreFixture::new("completed-replay");
+    let body = Operation::Sequence(
+        vec![step(
+            Ordinal::Dependent("1"),
+            Operation::Sequence(vec![], language::Span::default()),
+        )],
+        language::Span::default(),
+    );
+    let program = anonymous_with_body(body);
+
+    // A run sealed at its entry: resuming it shows the walk again but states
+    // nothing, the trail already carrying the whole of it.
+    let ledger = ledger_of(&[
+        (1, "/", State::Begin(Vec::new())),
+        (2, "/1", State::Begin(Vec::new())),
+        (2, "/1", State::Done(None)),
+        (1, "/", State::Done(None)),
+    ]);
+
+    let prompt = Mock::with_answers([]);
+    let mut runner = Runner::new(
+        &program,
+        fixture.take_appender(),
+        ledger,
+        prompt,
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("run");
+
+    let contents = fixture.pfftt_contents();
+    let appended: Vec<&str> = contents
+        .lines()
+        .filter(|line| !line.contains("Start"))
+        .collect();
+    assert!(
+        appended.is_empty(),
+        "a completed run appended {:?}",
+        appended
+    );
+
+    let prompt = runner.into_driver();
+    let asked: Vec<&str> = prompt
+        .events()
+        .iter()
+        .filter_map(|e| {
+            if let Event::Ask { qualified, .. } = e {
+                Some(qualified.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        asked.is_empty(),
+        "a completed run took a prompt at {:?}",
+        asked
+    );
 }
 
 #[test]
@@ -453,7 +556,7 @@ fn quit_propagates_and_stops_walking() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -521,7 +624,7 @@ fn section_walking() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -546,8 +649,15 @@ fn section_walking() {
     let section_fqns: Vec<&str> = events
         .iter()
         .filter_map(|e| {
-            if let Event::Seal { qualified } = e {
-                Some(qualified.as_str())
+            if let Event::Ask {
+                qualified, marker, ..
+            } = e
+            {
+                if marker == "↙" {
+                    Some(qualified.as_str())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -588,7 +698,7 @@ fn section_walking() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -636,7 +746,7 @@ fn parallel_step_index_starts_at_one() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -683,7 +793,7 @@ test :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -744,7 +854,7 @@ cycle(s) : Situation -> Done
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -757,7 +867,7 @@ cycle(s) : Situation -> Done
         .events()
         .iter()
         .filter_map(|e| {
-            if let Event::Acquire { name, forma } = e {
+            if let Event::Acquire { name, forma, .. } = e {
                 Some((
                     name.as_ref()
                         .map(String::as_str),
@@ -805,7 +915,7 @@ cycle(s) : Situation -> Done
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -863,7 +973,7 @@ cycle(s) : Situation -> Done
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -917,7 +1027,7 @@ helper :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -974,7 +1084,7 @@ helper :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1022,7 +1132,7 @@ inner :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1074,7 +1184,7 @@ greet(name) :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1121,7 +1231,7 @@ test :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1165,7 +1275,7 @@ test :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1191,8 +1301,15 @@ test :
         .events()
         .iter()
         .filter_map(|e| {
-            if let Event::Ask { qualified, .. } = e {
-                Some(qualified.as_str())
+            if let Event::Ask {
+                qualified, marker, ..
+            } = e
+            {
+                if marker == "→" {
+                    Some(qualified.as_str())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -1222,7 +1339,7 @@ test :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1298,7 +1415,7 @@ check :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         library,
     );
@@ -1346,7 +1463,7 @@ check :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         library,
     );
@@ -1402,7 +1519,7 @@ fn interactive_override_severs_the_rollup_to_done() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::with_answers([UserInput::Fail("not done".to_string()), UserInput::Override]),
         Library::stub(),
     );
@@ -1428,7 +1545,7 @@ fn interactive_accepting_a_failure_propagates() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         // The step's Fail, then the sign-off accepts the standing failure.
         Mock::with_answers([
             UserInput::Fail("not done".to_string()),
@@ -1470,7 +1587,7 @@ Prepare the ground { exec("true") } before the steps.
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         library,
     );
@@ -1546,7 +1663,7 @@ fn loop_inside_step_produces_one_result() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1605,7 +1722,7 @@ fn repeat_loops_until_quit() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1686,7 +1803,7 @@ fn foreach_walks_body_once_per_list_element() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1788,7 +1905,7 @@ fn foreach_over_seq_builtin_runs() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         library,
     );
@@ -1890,7 +2007,7 @@ fn foreach_destructures_tuple_elements() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -1958,7 +2075,7 @@ fn foreach_widens_primitive_to_singleton() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2018,7 +2135,7 @@ fn foreach_over_unit_iterates_nothing() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::new(),
         Library::stub(),
     );
@@ -2077,7 +2194,7 @@ fn foreach_over_non_list_errors_unbound_is_empty() {
     let mut runner = Runner::new(
         &program,
         tuple_fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::new(),
         Library::stub(),
     );
@@ -2100,7 +2217,7 @@ fn foreach_over_non_list_errors_unbound_is_empty() {
     let mut runner = Runner::new(
         &program,
         tablet_fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::new(),
         Library::stub(),
     );
@@ -2115,7 +2232,7 @@ fn foreach_over_non_list_errors_unbound_is_empty() {
     let mut runner = Runner::new(
         &program,
         unbound_fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::new(),
         Library::stub(),
     );
@@ -2156,7 +2273,7 @@ fn cost_of_non_quantity_value_errors_invalid_cost() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Mock::new(),
         Library::stub(),
     );
@@ -2371,7 +2488,7 @@ greet(name) :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2415,7 +2532,7 @@ Brew using { 42 ~ water } then serve it hot.
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2462,7 +2579,7 @@ make_coffee :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2506,7 +2623,7 @@ test :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2521,8 +2638,11 @@ test :
         .events()
         .iter()
         .filter_map(|e| {
-            if let Event::Ask { choices, .. } = e {
-                Some(choices)
+            if let Event::Ask {
+                marker, choices, ..
+            } = e
+            {
+                if marker == "→" { Some(choices) } else { None }
             } else {
                 None
             }
@@ -2559,7 +2679,7 @@ fn automatic_records_done_for_computable_step_skip_for_prose() {
         let mut runner = Runner::new(
             &program,
             fixture.take_appender(),
-            HashMap::new(),
+            Ledger::new(),
             Automatic::with_handle(Vec::new()),
             Library::stub(),
         );
@@ -2649,7 +2769,7 @@ fn sequence_value_is_last_member() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         Library::stub(),
     );
@@ -2710,7 +2830,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2758,7 +2878,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2781,7 +2901,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         Automatic::with_handle(Vec::new()),
         Library::stub(),
     );
@@ -2829,7 +2949,7 @@ cleanup :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2897,7 +3017,7 @@ task :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2950,7 +3070,7 @@ task :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -2974,8 +3094,8 @@ task :
         .events()
         .iter()
         .filter(|event| {
-            if let Event::Ask { .. } = event {
-                true
+            if let Event::Ask { marker, .. } = event {
+                marker == "→"
             } else {
                 false
             }
@@ -2986,25 +3106,44 @@ task :
     assert_eq!(acquires, 1);
     assert_eq!(asks, 1);
 
+    // A binding does not have the value it captures, so the step settles
+    // `Done ()` and the acquired value is reachable only on its `Bind`.
     let pfftt = fixture.pfftt_contents();
-    let record = pfftt
+    let records: Vec<_> = pfftt
         .lines()
         .filter_map(|line| parse_record(line).ok())
-        .find(|record| {
+        .filter(|record| {
             record
                 .path
                 .ends_with("/1")
-                && if let State::Done(_) = record.state {
-                    true
-                } else {
-                    false
-                }
+        })
+        .collect();
+
+    let bind = records
+        .iter()
+        .find_map(|record| {
+            if let State::Bind(bound) = &record.state {
+                Some(bound)
+            } else {
+                None
+            }
+        })
+        .expect("step 1 recorded Bind");
+    assert_eq!(bind.len(), 1);
+    assert_eq!(bind[0].name, Some("answer".to_string()));
+    assert_eq!(bind[0].value, Value::Literali("42".to_string()));
+
+    let done = records
+        .iter()
+        .find_map(|record| {
+            if let State::Done(value) = &record.state {
+                Some(value)
+            } else {
+                None
+            }
         })
         .expect("step 1 recorded Done");
-    let State::Done(Some(value)) = record.state else {
-        panic!("expected step 1 Done carrying the acquired value");
-    };
-    assert_eq!(value, Value::Literali("42".to_string()));
+    assert_eq!(*done, Some(Value::Unitus));
 }
 
 #[test]
@@ -3034,7 +3173,7 @@ task :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -3102,28 +3241,44 @@ cleanup :
     // The prior run completed steps 1 and 2 (and 2's two iterations); only
     // step 3 remains. `items` was acquired as a two-element list; `seen` was
     // bound once per iteration inside the loop.
-    let mut completed = HashMap::new();
-    completed.insert(
-        "/cleanup:/1".to_string(),
-        Value::Arraeum(vec![
-            Value::Literali("a".to_string()),
-            Value::Literali("b".to_string()),
-        ]),
-    );
-    completed.insert(
-        "/cleanup:/2/[1]/-1".to_string(),
-        Value::Literali("x".to_string()),
-    );
-    completed.insert(
-        "/cleanup:/2/[2]/-1".to_string(),
-        Value::Literali("y".to_string()),
-    );
-    completed.insert("/cleanup:/2".to_string(), Value::Unitus);
+    let items = Value::Arraeum(vec![
+        Value::Literali("a".to_string()),
+        Value::Literali("b".to_string()),
+    ]);
+    let ledger = ledger_of(&[
+        (1, "/cleanup:", State::Begin(Vec::new())),
+        (2, "/cleanup:/1", State::Begin(Vec::new())),
+        (2, "/cleanup:/1", bind_of("items", items.clone())),
+        (2, "/cleanup:/1", State::Done(None)),
+        (
+            3,
+            "/cleanup:/2",
+            State::Begin(vec![Supplied {
+                value: items,
+                name: Some("items".to_string()),
+            }]),
+        ),
+        (4, "/cleanup:/2/[1]/-1", State::Begin(Vec::new())),
+        (
+            4,
+            "/cleanup:/2/[1]/-1",
+            bind_of("seen", Value::Literali("x".to_string())),
+        ),
+        (4, "/cleanup:/2/[1]/-1", State::Done(None)),
+        (5, "/cleanup:/2/[2]/-1", State::Begin(Vec::new())),
+        (
+            5,
+            "/cleanup:/2/[2]/-1",
+            bind_of("seen", Value::Literali("y".to_string())),
+        ),
+        (5, "/cleanup:/2/[2]/-1", State::Done(None)),
+        (3, "/cleanup:/2", State::Done(None)),
+    ]);
 
     let mut runner = Runner::new(
         &program,
         Appender::memory(),
-        completed,
+        ledger,
         Automatic::with_handle(Vec::new()),
         Library::stub(),
     );
@@ -3140,6 +3295,29 @@ cleanup :
 // An elided invocation `<hail>` acquires its parameter `name` from the
 // user. The argument it was called with is recorded as an `Input` at the
 // callee's path so a resume can restore it.
+// Fold a prior run's records into a Ledger the way `Store::open` does, so a
+// test can stand a resume on a trail it states rather than one it has to run.
+fn ledger_of(records: &[(u32, &str, State)]) -> Ledger {
+    let mut ledger = Ledger::new();
+    for (serial, path, state) in records {
+        ledger.apply(&Record {
+            recorded: "2026-05-14T12:00:00Z".to_string(),
+            run_id: RunId(1),
+            serial: Serial(*serial),
+            path: path.to_string(),
+            state: state.clone(),
+        });
+    }
+    ledger
+}
+
+fn bind_of(name: &str, value: Value) -> State {
+    State::Bind(vec![Supplied {
+        value,
+        name: Some(name.to_string()),
+    }])
+}
+
 const ACQUIRE_INPUT_SOURCE: &str = r#"
 % technique v1
 
@@ -3171,7 +3349,7 @@ fn invoke_records_supplied_input() {
     let mut runner = Runner::new(
         &program,
         Appender::memory(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -3200,14 +3378,18 @@ fn resume_restores_invoke_input_without_reprompting() {
     // The prior run recorded the argument acquired for `<hail>`. Resume with
     // that input preloaded: the acquire must not fire, and `name` is bound from
     // the record (so `{ name }` evaluates rather than raising UnboundVariable).
-    let mut inputs = HashMap::new();
-    inputs.insert(
-        "/hail:".to_string(),
-        vec![Supplied {
-            value: Value::Literali("World".to_string()),
-            name: Some("name".to_string()),
-        }],
-    );
+    let ledger = ledger_of(&[
+        (1, "/greet:", State::Begin(Vec::new())),
+        (2, "/greet:/1", State::Begin(Vec::new())),
+        (
+            3,
+            "/hail:",
+            State::Begin(vec![Supplied {
+                value: Value::Literali("World".to_string()),
+                name: Some("name".to_string()),
+            }]),
+        ),
+    ]);
 
     let prompt = Mock::with_answers([
         UserInput::Done(Value::Unitus),
@@ -3218,11 +3400,10 @@ fn resume_restores_invoke_input_without_reprompting() {
     let mut runner = Runner::new(
         &program,
         Appender::memory(),
-        HashMap::new(),
+        ledger,
         prompt,
         Library::stub(),
-    )
-    .with_inputs(inputs);
+    );
     let outcome = runner
         .run(Environment::new())
         .expect("resume runs without re-acquiring");
@@ -3276,7 +3457,7 @@ sweep :
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -3289,7 +3470,7 @@ sweep :
         .events()
         .iter()
         .filter_map(|e| {
-            if let Event::Acquire { name, forma } = e {
+            if let Event::Acquire { name, forma, .. } = e {
                 Some((
                     name.as_ref()
                         .map(String::as_str),
@@ -3337,7 +3518,7 @@ sweep(regions) : [Region] -> ()
     let mut runner = Runner::new(
         &program,
         fixture.take_appender(),
-        HashMap::new(),
+        Ledger::new(),
         prompt,
         Library::stub(),
     );
@@ -3350,7 +3531,7 @@ sweep(regions) : [Region] -> ()
         .events()
         .iter()
         .filter_map(|e| {
-            if let Event::Acquire { name, forma } = e {
+            if let Event::Acquire { name, forma, .. } = e {
                 Some((
                     name.as_ref()
                         .map(String::as_str),
@@ -3395,7 +3576,7 @@ dry_towel(towel) : Towel -> ()
         let mut runner = Runner::new(
             &program,
             Appender::memory(),
-            HashMap::new(),
+            Ledger::new(),
             Scripted::new([("/dry_towel:/2".to_string(), UserInput::Quit)]),
             Library::stub(),
         );
@@ -3406,23 +3587,15 @@ dry_towel(towel) : Towel -> ()
             .to_string()
     };
 
-    let mut completed = HashMap::new();
+    let mut ledger = Ledger::new();
     for record in crate::engraving::parse_records(&first).expect("trail parses") {
-        match record.state {
-            State::Done(value) => {
-                completed.insert(record.path, value.unwrap_or(Value::Unitus));
-            }
-            State::Skip | State::Fail(_) => {
-                completed.insert(record.path, Value::Unitus);
-            }
-            _ => {}
-        }
+        ledger.apply(&record);
     }
 
     let mut runner = Runner::new(
         &program,
         Appender::memory(),
-        completed,
+        ledger,
         Scripted::new([]),
         Library::stub(),
     );
@@ -3439,5 +3612,962 @@ dry_towel(towel) : Towel -> ()
     assert_eq!(
         begins, 1,
         "the second towel's first step must be performed on resume"
+    );
+}
+
+/// A completed Section is descended rather than returned from, so the walk
+/// reaches the work nested beneath it — but the descent is a replay: nothing
+/// under it is prompted for, and nothing under it is recorded again.
+#[test]
+fn resume_descends_completed_section_without_recording() {
+    let source = r#"
+% technique v1
+
+audit :
+
+I.  Delete Resources
+
+    1.  Check the manifest
+    2.  Remove the instances
+
+II. Close Account
+
+    1.  File the paperwork
+        "#
+    .trim_ascii();
+    let document = parsing::parse(Path::new("Test.tq"), source).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let first = {
+        let mut runner = Runner::new(
+            &program,
+            Appender::memory(),
+            Ledger::new(),
+            Scripted::new([("/audit:/II/1".to_string(), UserInput::Quit)]),
+            Library::stub(),
+        );
+        let _ = runner.run(Environment::new());
+        runner
+            .into_appender()
+            .contents()
+            .to_string()
+    };
+    // Unattended, prose steps settle as Skip, so the section does too. What
+    // matters here is that it has an outcome at all.
+    assert!(first.contains("/audit:/I Skip"), "section I settled");
+
+    let mut ledger = Ledger::new();
+    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+        ledger.apply(&record);
+    }
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Scripted::new([]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("resume");
+    let second = runner
+        .into_appender()
+        .contents()
+        .to_string();
+
+    let replayed: Vec<&str> = second
+        .lines()
+        .filter(|line| line.contains("/audit:/I ") || line.contains("/audit:/I/"))
+        .collect();
+    assert!(
+        replayed.is_empty(),
+        "the completed section records nothing on replay: {:?}",
+        replayed
+    );
+    assert!(
+        !second.contains("/audit:/II/1 Begin"),
+        "its Begin already stands from the first run and is not written again"
+    );
+    assert!(
+        second.contains("/audit:/II/1 Skip"),
+        "the step the first run quit at is performed"
+    );
+}
+
+/// Descending into a completed step reaches the host calls it made. They
+/// happened already, so a replay announces each rather than dispatching it.
+#[test]
+fn replayed_execute_announces_rather_than_dispatching() {
+    let source = r#"
+% technique v1
+
+deploy :
+
+    1.  Publish the build { exec("make release") }
+    2.  Announce it
+        "#
+    .trim_ascii();
+    let document = parsing::parse(Path::new("Test.tq"), source).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+    crate::linking::link(&mut program, &Library::stub()).expect("link");
+
+    let first = {
+        let mut runner = Runner::new(
+            &program,
+            Appender::memory(),
+            Ledger::new(),
+            Scripted::new([("/deploy:/2".to_string(), UserInput::Quit)]),
+            Library::stub(),
+        );
+        let _ = runner.run(Environment::new());
+        runner
+            .into_appender()
+            .contents()
+            .to_string()
+    };
+    assert!(
+        first.contains("/deploy:/1 Execute exec()"),
+        "the call was made"
+    );
+
+    let mut ledger = Ledger::new();
+    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+        ledger.apply(&record);
+    }
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Mock::with_answers([UserInput::Done(Value::Unitus)]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("resume");
+
+    let events = runner
+        .into_driver()
+        .events()
+        .to_vec();
+    assert!(
+        !events
+            .iter()
+            .any(|e| {
+                if let Event::Command { .. } = e {
+                    true
+                } else {
+                    false
+                }
+            }),
+        "the command is not put to the user again: {:?}",
+        events
+    );
+    assert!(
+        events.contains(&Event::Announce("exec()".to_string())),
+        "the call it made is announced: {:?}",
+        events
+    );
+}
+
+const GUARD_SOURCE: &str = r#"
+% technique v1
+
+audit :
+
+I.  Survey
+
+    1.  Count the assets { 7 ~ assets }
+
+II. Report
+
+    1.  File a return on { assets }
+"#;
+
+// The trail of a complete run of GUARD_SOURCE, with `/audit:/II/1` recorded
+// as having read `assets` at whatever `stated` says. A prior value there is
+// what an amendment upstream leaves behind.
+fn guard_ledger(stated: i64) -> Ledger {
+    ledger_of(&[
+        (1, "/audit:", State::Begin(Vec::new())),
+        (2, "/audit:/I", State::Begin(Vec::new())),
+        (3, "/audit:/I/1", State::Begin(Vec::new())),
+        (
+            3,
+            "/audit:/I/1",
+            bind_of(
+                "assets",
+                Value::Quanticle(crate::value::Numeric::Integral(7)),
+            ),
+        ),
+        (3, "/audit:/I/1", State::Done(None)),
+        (2, "/audit:/I", State::Done(None)),
+        (4, "/audit:/II", State::Begin(Vec::new())),
+        (
+            5,
+            "/audit:/II/1",
+            State::Begin(vec![Supplied {
+                value: Value::Quanticle(crate::value::Numeric::Integral(stated)),
+                name: Some("assets".to_string()),
+            }]),
+        ),
+        (5, "/audit:/II/1", State::Done(None)),
+        (4, "/audit:/II", State::Done(None)),
+    ])
+}
+
+/// An amendment reaches the descendants of a completed sibling Section. The
+/// Section's own `Begin` is empty so its guard says nothing about what is
+/// nested beneath it; only descending finds the step whose recorded input no
+/// longer holds, and that step is redone.
+#[test]
+fn amended_input_reaches_beneath_completed_section() {
+    let trail = walk_guarded(3);
+
+    assert!(
+        trail.contains("005 /audit:/II/1 Begin"),
+        "the stale step is redone, at the serial it was recorded under: {}",
+        trail
+    );
+    assert!(
+        !trail.contains("/audit:/I/1"),
+        "the step whose inputs still hold is replayed, writing nothing: {}",
+        trail
+    );
+    assert!(
+        !trail.contains("/audit:/II Begin"),
+        "the section itself is replayed, writing nothing: {}",
+        trail
+    );
+}
+
+/// The converse: a recorded step whose inputs are unchanged is not redone,
+/// however deep inside a replayed scope it sits.
+#[test]
+fn unamended_input_leaves_completed_step_alone() {
+    let trail = walk_guarded(7);
+
+    assert!(
+        !trail.contains("/audit:/II/1"),
+        "nothing is redone when every recorded input still holds: {}",
+        trail
+    );
+}
+
+// Walk GUARD_SOURCE against a ledger stating `assets` was `stated` at
+// `/audit:/II/1`, returning the trail the walk appends.
+fn walk_guarded(stated: i64) -> String {
+    walk_recorded(GUARD_SOURCE, guard_ledger(stated))
+}
+
+/// Two `foreach` loops in one step body share the scope's numbering, so the
+/// second continues where the first left off. Numbering each from 1 gave both
+/// loops iterations at `[1]` and `[2]`, and once iterations bracket themselves
+/// the second loop's items would pool-match the first loop's records.
+#[test]
+fn sibling_loops_do_not_collide_on_an_index() {
+    let source = r#"
+% technique v1
+
+siblings :
+
+    1.  Go { foreach a in ["x","y"] ; foreach b in ["p","q"] }
+        "#
+    .trim_ascii();
+    let trail = walk_fresh(source);
+
+    let iterations: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Begin ( \""))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(3)
+        })
+        .collect();
+    assert_eq!(
+        iterations,
+        vec![
+            "/siblings:/1/[1]",
+            "/siblings:/1/[2]",
+            "/siblings:/1/[3]",
+            "/siblings:/1/[4]"
+        ]
+    );
+}
+
+const TALLY_SOURCE: &str = r#"
+% technique v1
+
+tally :
+
+    1.  Count { foreach item in ["one","one","two"] }
+        -   note it
+"#;
+
+// A trail of a run of TALLY_SOURCE whose loop recorded iterations at the given
+// indices and items. The enclosing step is left unfinished, so the re-walk
+// reaches the loop rather than replaying the step whole.
+fn tally_ledger(recorded: &[(u32, usize, &str)]) -> Ledger {
+    let mut records = vec![
+        (1, "/tally:".to_string(), State::Begin(Vec::new())),
+        (2, "/tally:/1".to_string(), State::Begin(Vec::new())),
+    ];
+    for (serial, number, item) in recorded {
+        let began = State::Begin(vec![Supplied {
+            value: Value::Literali(item.to_string()),
+            name: Some("item".to_string()),
+        }]);
+        let path = format!("/tally:/1/[{}]", number);
+        records.push((*serial, path.clone(), began.clone()));
+        records.push((serial + 1, format!("{}/-1", path), began));
+        records.push((serial + 1, format!("{}/-1", path), State::Skip));
+        records.push((*serial, path, State::Skip));
+    }
+    let borrowed: Vec<(u32, &str, State)> = records
+        .iter()
+        .map(|(serial, path, state)| (*serial, path.as_str(), state.clone()))
+        .collect();
+    ledger_of(&borrowed)
+}
+
+/// Consumption is what preserves multiplicity. A list of three items runs
+/// three times whatever the prior run recorded: the two identical items
+/// cannot collapse onto the one recorded iteration matching them, because
+/// claiming it takes it out of the pool.
+#[test]
+fn identical_items_each_get_their_own_iteration() {
+    let trail = walk_recorded(TALLY_SOURCE, tally_ledger(&[(3, 1, "one"), (5, 2, "two")]));
+
+    assert!(
+        trail.contains(r#"/tally:/1/[3] Begin ( "one" ~ item )"#),
+        "the second `one` has no unclaimed match and runs fresh: {}",
+        trail
+    );
+    assert!(
+        !trail.contains("/tally:/1/[1] Begin") && !trail.contains("/tally:/1/[2] Begin"),
+        "the two that matched are replayed, writing nothing: {}",
+        trail
+    );
+}
+
+/// A fresh item takes the numeric maximum plus one. Taking the last key of
+/// the prefix range instead would hand back an index from the middle, since
+/// `[10]` sorts lexicographically between `[1]` and `[2]`.
+#[test]
+fn fresh_iteration_takes_the_numeric_maximum_plus_one() {
+    let source = r#"
+% technique v1
+
+tally :
+
+    1.  Count { foreach item in ["one","two","three"] }
+        -   note it
+"#;
+    let trail = walk_recorded(
+        source,
+        tally_ledger(&[(3, 2, "one"), (5, 3, "orphan"), (7, 10, "two")]),
+    );
+
+    assert!(
+        trail.contains(r#"/tally:/1/[11] Begin ( "three" ~ item )"#),
+        "the unmatched item lands beyond every recorded index: {}",
+        trail
+    );
+}
+
+// Walk a source with an empty ledger, returning the trail it appends.
+fn walk_fresh(source: &str) -> String {
+    walk_recorded(source, Ledger::new())
+}
+
+// Walk a source against a prior run's ledger, returning the trail it appends.
+fn walk_recorded(source: &str, ledger: Ledger) -> String {
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Scripted::new([]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("run");
+    runner
+        .into_appender()
+        .contents()
+        .to_string()
+}
+
+/// Amending is a `Revoke` plus ordinary re-execution: nothing is collected at
+/// the review prompt and nothing is written from it beyond the revocation.
+/// The walk restarts, replays what still stands, and reaches the amended step
+/// again — which is what `drive()` loops for.
+#[test]
+fn amend_revokes_and_the_walk_reaches_the_step_again() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Note the reading ~ reading
+    2.  File the report
+    3.  Post the notice
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // At step 3 ask to review. The cursor opens on the last record written —
+    // step 3's own `Begin` — and one back reaches step 2's outcome, where
+    // amending withdraws it. The restart is not
+    // driven here — the runner returns Restarting and `drive()` is what walks
+    // again — so this asserts on the trail the first walk leaves.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/survey:/3".to_string(), UserInput::Review)],
+            [Review::Back, Review::Chose(Offer::Edit)],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    assert!(
+        trail.contains("/survey:/2 Revoke"),
+        "the revocation reaches the file before the restart: {}",
+        trail
+    );
+    assert!(
+        !trail.contains("/ Finish") && !trail.contains("/ Stop"),
+        "a restart is neither a finish nor a stop: {}",
+        trail
+    );
+
+    // Folding that trail is the state the restart walks against: step 2 has
+    // been withdrawn, and step 1 — an ancestor's sibling, off the spine — has
+    // not.
+    let mut ledger = Ledger::new();
+    for record in crate::engraving::parse_records(&trail).expect("trail parses") {
+        ledger.apply(&record);
+    }
+    let step = ledger
+        .look(Serial(1), "/2")
+        .expect("step 2");
+    assert!(step.revoked);
+    assert!(
+        step.outcome
+            .is_none()
+    );
+    assert!(
+        ledger
+            .look(Serial(1), "/1")
+            .expect("step 1")
+            .outcome
+            .is_some(),
+        "the step that was not amended still stands"
+    );
+
+    // The second walk redoes step 2 and leaves step 1 alone.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Scripted::new([]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("resume");
+    let second = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    assert!(second.contains("/survey:/2 Begin"), "step 2 is redone");
+    assert!(
+        !second.contains("/survey:/1 Begin"),
+        "step 1 is replayed, writing nothing: {}",
+        second
+    );
+    assert!(
+        !second.contains("/survey: Begin"),
+        "the enclosing procedure already stands and is not written again: {}",
+        second
+    );
+    // Redone work is new work: the revoked line's serial is spent, and the
+    // redo is recorded under a fresh one.
+    let spent = trail
+        .lines()
+        .find(|line| line.contains("/survey:/2 Begin"))
+        .and_then(|line| {
+            line.split(' ')
+                .nth(2)
+        })
+        .expect("step 2 began in the first walk");
+    assert!(
+        !second.contains(&format!("{} /survey:/2 Begin", spent)),
+        "the redo does not reuse serial {}: {}",
+        spent,
+        second
+    );
+}
+
+/// The re-prompt at an amended acquire opens on what was recorded there, so
+/// correcting one character of a long list is not retyping the whole list.
+/// This is a default the user still commits at the real prompt, against the
+/// real type check — not a value written from the review prompt.
+#[test]
+fn a_revoked_acquire_prompt_opens_on_the_old_value() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Note the reading ~ reading
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let ledger = ledger_of(&[
+        (1, "/survey:", State::Begin(Vec::new())),
+        (2, "/survey:/1", State::Begin(Vec::new())),
+        (
+            2,
+            "/survey:/1",
+            bind_of("reading", Value::Literali("i-1369139".to_string())),
+        ),
+        (2, "/survey:/1", State::Done(None)),
+        (2, "/survey:/1", State::Revoke),
+    ]);
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Mock::with_answers([UserInput::Done(Value::Literali("i-1369193".to_string()))]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("run");
+
+    let seeds: Vec<Option<Value>> = runner
+        .into_driver()
+        .events()
+        .iter()
+        .filter_map(|e| {
+            if let Event::Acquire { seed, .. } = e {
+                Some(seed.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        seeds,
+        vec![Some(Value::Literali("i-1369139".to_string()))],
+        "the acquire prompt is seeded from what the revoked step bound"
+    );
+}
+
+/// Up out of the live prompt, back over the sections the walk has closed, then
+/// Amend: the `Revoke` lands at the *reviewed* position, not at the node being
+/// prompted, and the walk restarts.
+#[test]
+fn amending_a_reviewed_position_revokes_there_not_here() {
+    let source = r#"
+% technique v1
+
+survey :
+
+I.  Preparation
+
+    1.  Gather the samples
+
+II. Analysis
+
+    1.  Weigh the samples
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // At II/1 ask to review. The cursor opens on the last record written and
+    // walks back over II's entry and I's close to the step inside I.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/survey:/II/1".to_string(), UserInput::Review)],
+            [
+                Review::Back,
+                Review::Back,
+                Review::Back,
+                Review::Chose(Offer::Edit),
+            ],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    let revocations: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Revoke"))
+        .collect();
+    assert_eq!(
+        revocations
+            .iter()
+            .map(|line| {
+                line.split(' ')
+                    .nth(3)
+                    .unwrap_or("")
+            })
+            .collect::<Vec<&str>>(),
+        vec!["/survey:/I/1"],
+        "one revocation, at the reviewed position rather than the live one: {}",
+        trail
+    );
+}
+
+/// Right descends into a call that has returned. Reviewing back to the call's
+/// close and stepping in reaches the callee's own steps, and amending there
+/// revokes inside the callee rather than at the call site.
+#[test]
+fn review_reaches_inside_a_returned_call() {
+    let source = r#"
+% technique v1
+
+launder :
+
+    1.  <dry_towel>("blue")
+    2.  Fold it
+
+dry_towel(towel) : Towel -> ()
+
+    1.  Hang { towel } on the line
+    2.  Wait for the sun
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // Standing at step 2, what lies behind is step 1's outcome, dry_towel's
+    // close, and then its second step. Back walks into the returned call
+    // without any descent: the records inside it are on the axis like the
+    // rest.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/launder:/2".to_string(), UserInput::Review)],
+            [
+                Review::Back,
+                Review::Back,
+                Review::Back,
+                Review::Chose(Offer::Edit),
+            ],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    let revoked: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Revoke"))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(3)
+        })
+        .collect();
+    assert_eq!(
+        revoked,
+        vec!["/dry_towel:/2"],
+        "the revocation lands inside the callee: {}",
+        trail
+    );
+}
+
+/// At the run root the arrows do not strand the user. `↑` stays at `/`, which
+/// can never have a sibling to page to, and `↓` goes back in to the entry
+/// procedure rather than ejecting to the live prompt a hundred steps away.
+#[test]
+fn review_at_the_root_pages_into_the_entry_procedure() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Note the reading ~ reading
+    2.  File the report
+    3.  Post the notice
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // From step 3 the cursor opens on step 2; two climbs reach `/survey:` and
+    // then `/`. Up there stays put, Down returns to `/survey:`, and Right
+    // descends to its first step, which is what the amendment names.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/survey:/3".to_string(), UserInput::Review)],
+            [
+                Review::OutOf,
+                Review::OutOf,
+                Review::Back,
+                Review::Forward,
+                Review::Into,
+                Review::Chose(Offer::Edit),
+            ],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    let revoked: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Revoke"))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(3)
+        })
+        .collect();
+    assert_eq!(
+        revoked,
+        vec!["/survey:/1"],
+        "Down at the root reached the entry procedure rather than leaving review: {}",
+        trail
+    );
+}
+
+/// A scope the walk is still inside can never have a later sibling, so Down
+/// from one must not eject: it goes back in, to the first thing that happened
+/// inside, rather than to the live prompt the user climbed out of.
+#[test]
+fn review_down_from_an_enclosing_scope_goes_back_in() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Note the reading
+    2.  File the report
+    3.  Post the notice
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // From step 3 the cursor opens on step 2; one climb reaches `survey:`,
+    // which the walk is standing in and so has nothing beside it. Down there
+    // returns to its first step, which is what the amendment names.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/survey:/3".to_string(), UserInput::Review)],
+            [Review::OutOf, Review::Forward, Review::Chose(Offer::Edit)],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    let revoked: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Revoke"))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(3)
+        })
+        .collect();
+    assert_eq!(
+        revoked,
+        vec!["/survey:/1"],
+        "Down from the enclosing scope went back in rather than leaving review: {}",
+        trail
+    );
+}
+
+/// The dispatch record is written when the `Begin` it introduces is. Resuming
+/// into a call that had already started records neither, so the trail never
+/// shows a dispatch that opened nothing.
+#[test]
+fn resume_into_a_started_call_records_no_dispatch() {
+    let source = r#"
+% technique v1
+
+main :
+
+    1.  <helper>
+    2.  After
+
+helper :
+
+    1.  Inside one
+    2.  Inside two
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::new([("/helper:/2".to_string(), UserInput::Quit)]),
+        Library::stub(),
+    );
+    let _ = runner.run(Environment::new());
+    let first = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    assert!(first.contains("Invoke helper:"), "the call was dispatched");
+
+    let mut ledger = Ledger::new();
+    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+        ledger.apply(&record);
+    }
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        ledger,
+        Scripted::new([]),
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("resume");
+    let second = runner
+        .into_appender()
+        .contents()
+        .to_string();
+
+    assert!(
+        !second.contains("Invoke"),
+        "the dispatch already stands and is not written again: {}",
+        second
+    );
+    assert!(
+        !second.contains("/helper: Begin"),
+        "nor is the callee's entry: {}",
+        second
+    );
+    assert!(
+        second.contains("/helper:/2 Skip"),
+        "the step in flight is settled: {}",
+        second
+    );
+}
+
+/// Up from a climbed scope that has nothing before it drops back to the
+/// settled order, reaching whatever settled last before that scope was
+/// entered. A first child has no earlier sibling, and must not be a dead end.
+#[test]
+fn review_pages_over_a_call_to_the_peer_before_it() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  First step
+    2.  <helper>
+    3.  Last step
+
+helper :
+
+    1.  Inside one
+    2.  Inside two
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    // At step 3 the cursor opens on its `Begin`; one back reaches step 2's
+    // outcome. Step 2 is the call, so its records run the whole length of
+    // helper: — and PageUp crosses all of them in one press, landing on the
+    // outcome of step 1 because that is the plane the cursor was on.
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Scripted::reviewing(
+            [("/survey:/3".to_string(), UserInput::Review)],
+            [Review::Back, Review::Prior, Review::Chose(Offer::Edit)],
+        ),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("run");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    let revoked: Vec<&str> = trail
+        .lines()
+        .filter(|line| line.contains("Revoke"))
+        .filter_map(|line| {
+            line.split(' ')
+                .nth(3)
+        })
+        .collect();
+    assert_eq!(
+        revoked,
+        vec!["/survey:/1"],
+        "Up reached what settled before helper: was entered: {}",
+        trail
     );
 }

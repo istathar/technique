@@ -5,6 +5,7 @@ use std::io;
 use std::path::PathBuf;
 
 mod ledger;
+mod navigation;
 mod record;
 mod store;
 
