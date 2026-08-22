@@ -1,4 +1,4 @@
-use crate::engraving::{InvokeTarget, Record, RunId, State, Supplied};
+use crate::engraving::{InvokeTarget, Record, RunId, Serial, State, Supplied};
 use crate::formatting::Identity;
 use crate::reporting::{Column, render_console, render_json};
 use crate::value::Value;
@@ -7,6 +7,7 @@ fn record(recorded: &str, path: &str, state: State) -> Record {
     Record {
         recorded: recorded.to_string(),
         run_id: RunId(7),
+        serial: Serial::LIFECYCLE,
         path: path.to_string(),
         state,
     }

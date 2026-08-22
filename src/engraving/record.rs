@@ -25,6 +25,25 @@ impl RunId {
     }
 }
 
+/// Identifier for one scope within a run. Ths is effectively an interned
+/// route from /, shared by its `Begin`, its outcome, and by every record
+/// written inside it. Written by convention as a three-digit wide zero-padded
+/// string; `000` is reserved for the metadata records that bracket the
+/// Technique as a whole.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct Serial(pub u32);
+
+impl Serial {
+    /// The serial for the root-level metadata records `Start`, `Finish`,
+    /// `Stop` and `Resume`.
+    pub const LIFECYCLE: Serial = Serial(0);
+
+    /// Render as a three-digit zero-padded number.
+    pub fn render(self) -> String {
+        format!("{:03}", self.0)
+    }
+}
+
 /// Errors raised if a PFFTT file is malformed or invalid.
 #[derive(Debug, Eq, PartialEq)]
 pub enum RecordError {
