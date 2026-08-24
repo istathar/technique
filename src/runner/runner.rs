@@ -968,15 +968,16 @@ impl<'i, D: Driver> Runner<'i, D> {
                                     .as_ref()
                                     .and_then(|r| r.get(i))
                                     .map(|s| &s.value);
-                                match self
-                                    .driver
-                                    .acquire(&caller, &invoked, bind, forma, seed)
-                                {
-                                    UserInput::Done(value) => Supplied {
-                                        value,
-                                        name: bind.map(|b| b.to_string()),
-                                    },
-                                    other => return self.abandon(&lexical, settled, other),
+                                let value =
+                                    match self.solicit(&caller, &invoked, bind, forma, seed)? {
+                                        Conclusion::Completed(Outcome::Done(value)) => value,
+                                        other => {
+                                            return self.abandon(&lexical, settled, other);
+                                        }
+                                    };
+                                Supplied {
+                                    value,
+                                    name: bind.map(|b| b.to_string()),
                                 }
                             }
                         };
@@ -1078,58 +1079,18 @@ impl<'i, D: Driver> Runner<'i, D> {
                 // Prompt at the departure, echoing the arguments flowing into
                 // the external Technque.
                 let echo = self.render_deferred_echo(env, &invocable.arguments)?;
-                // Review is not an answer at either boundary: it steps back
-                // through the trail and returns to the prompt it left.
-                let embarked = loop {
-                    match self
-                        .driver
-                        .depart(&qualified, &echo)
-                    {
-                        UserInput::Review => match self.reviewed()? {
-                            Some(conclusion) => {
-                                self.path
-                                    .pop();
-                                return Ok(conclusion);
-                            }
-                            None => {}
-                        },
-                        answered => break answered,
+                let embarked = self.lift(|driver| driver.depart(&qualified, &echo))?;
+                let conclusion = match embarked {
+                    Conclusion::Completed(Outcome::Done(_)) => {
+                        self.lift(|driver| driver.external(&qualified))?
                     }
-                };
-                let input = match embarked {
-                    UserInput::Quit => {
-                        self.path
-                            .pop();
-                        return self.record_stop();
-                    }
-                    UserInput::Done(_) => loop {
-                        match self
-                            .driver
-                            .external(&qualified)
-                        {
-                            UserInput::Review => match self.reviewed()? {
-                                Some(conclusion) => {
-                                    self.path
-                                        .pop();
-                                    return Ok(conclusion);
-                                }
-                                None => {}
-                            },
-                            answered => break answered,
-                        }
-                    },
                     declined => declined,
                 };
-                if let UserInput::Quit = input {
-                    self.path
-                        .pop();
-                    return self.record_stop();
+                if let Conclusion::Completed(_) = &conclusion {
+                    self.driver
+                        .show_verdict("⇐", &qualified, &verdict_from(&conclusion));
+                    self.record_outcome(&qualified, record_state(&conclusion))?;
                 }
-
-                self.driver
-                    .show_verdict("⇐", &qualified, &input);
-                let conclusion = outcome_from(input);
-                self.record_outcome(&qualified, record_state(&conclusion))?;
                 self.path
                     .pop();
                 Ok(conclusion)
@@ -1194,21 +1155,12 @@ impl<'i, D: Driver> Runner<'i, D> {
                         item.value
                             .clone()
                     });
-                // Review is not an answer, so it does not advance to the next
-                // name: the same one is asked again, and the values already
-                // collected stand.
-                let value = loop {
-                    match self
-                        .driver
-                        .acquire(&qualified, "", Some(name.value), forma, seed.as_ref())
-                    {
-                        UserInput::Done(value) => break value,
-                        UserInput::Review => match self.review()? {
-                            Reviewed::Amended => return Ok(Conclusion::Restarting),
-                            Reviewed::Quit => return self.record_stop(),
-                            Reviewed::Left => {}
-                        },
-                        UserInput::Skip => {
+                let value =
+                    match self.solicit(&qualified, "", Some(name.value), forma, seed.as_ref())? {
+                        Conclusion::Completed(Outcome::Done(value)) => value,
+                        // A skipped binding still binds, so a later reference
+                        // to the name resolves.
+                        Conclusion::Completed(Outcome::Skip(value)) => {
                             for name in names {
                                 super::evaluator::bind_names(
                                     env,
@@ -1216,18 +1168,10 @@ impl<'i, D: Driver> Runner<'i, D> {
                                     Value::Unitus,
                                 )?;
                             }
-                            return Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)));
+                            return Ok(Conclusion::Completed(Outcome::Skip(value)));
                         }
-                        UserInput::Fail(reason) => {
-                            return Ok(Conclusion::Completed(Outcome::Fail(Failure::Aborted(
-                                reason,
-                            ))));
-                        }
-                        // an acquire prompt has no rollup to override
-                        UserInput::Override => unreachable!(),
-                        UserInput::Quit => return self.record_stop(),
-                    }
-                };
+                        other => return Ok(other),
+                    };
                 acquired.push(value);
             }
             for (name, value) in names
@@ -1757,17 +1701,12 @@ impl<'i, D: Driver> Runner<'i, D> {
                         produced: Value::Unitus,
                         reviewable: self.reviewable(),
                     };
-                    let input = match self.settle(question, &[], "→")? {
-                        Some(input) => input,
-                        None => return Ok(Conclusion::Restarting),
-                    };
-                    if let UserInput::Quit = input {
-                        return self.record_stop();
+                    let conclusion = self.settle(question, &[], "→")?;
+                    if let Conclusion::Completed(_) = &conclusion {
+                        self.driver
+                            .show_verdict("→", qualified, &verdict_from(&conclusion));
+                        self.record_outcome(qualified, record_state(&conclusion))?;
                     }
-                    self.driver
-                        .show_verdict("→", qualified, &input);
-                    let conclusion = outcome_from(input);
-                    self.record_outcome(qualified, record_state(&conclusion))?;
                     return Ok(conclusion);
                 }
                 // The body recorded itself — a declined command beat (Skip) or a
@@ -1813,8 +1752,6 @@ impl<'i, D: Driver> Runner<'i, D> {
             .map(|r| r.value)
             .collect();
         let kind = self.kind_of_step(op);
-        // `ask` consumes `produced`; keep a copy for a Skip to propagate.
-        let propagate = produced.clone();
         let question = Question {
             qualified,
             marker: "→",
@@ -1823,23 +1760,16 @@ impl<'i, D: Driver> Runner<'i, D> {
             produced,
             reviewable: self.reviewable(),
         };
-        let input = match self.settle(question, &choices, "→")? {
-            Some(input) => input,
-            None => return Ok(Conclusion::Restarting),
-        };
-
         // Quit halts the walk; this step's Begin stands without a matching
         // outcome, so resume re-runs it.
-        if let UserInput::Quit = input {
-            return self.record_stop();
+        let conclusion = self.settle(question, &choices, "→")?;
+        if let Conclusion::Completed(_) = &conclusion {
+        } else {
+            return Ok(conclusion);
         }
 
         self.driver
-            .show_verdict("→", qualified, &input);
-        let conclusion = match input {
-            UserInput::Skip => Conclusion::Completed(Outcome::Skip(propagate)),
-            other => outcome_from(other),
-        };
+            .show_verdict("→", qualified, &verdict_from(&conclusion));
         // Bind the chosen response to the step's name(s); a skip binds Unitus
         // so a later reference resolves, mirroring a descriptive acquire.
         if binding_via_response {
@@ -1868,9 +1798,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     }
 
     /// Take a verdict at an Enter-site, entering the review loop and asking
-    /// again as many times as the user asks for it. `None` means the walk is
-    /// restarting: the user amended a value, the `Revoke` is written, and there
-    /// is nothing further to settle here.
+    /// again as many times as the user asks for it.
     ///
     /// The site is remembered once it settles, so review reaches back over what
     /// the walk has passed but never over the node being prompted.
@@ -1879,49 +1807,103 @@ impl<'i, D: Driver> Runner<'i, D> {
         question: Question<'_>,
         choices: &[&str],
         marker: &str,
-    ) -> Result<Option<UserInput>, RunnerError> {
+    ) -> Result<Conclusion, RunnerError> {
         let qualified = question
             .qualified
             .to_string();
         let serial = self.serial;
         // A verdict already chosen for this position in review settles it
         // without asking: the answer was given there.
-        let chosen = match &self.amending {
+        let mut chosen = match &self.amending {
             Some((at, _)) if *at == serial => self
                 .amending
-                .take(),
+                .take()
+                .map(|(_, verdict)| verdict),
             _ => None,
         };
-        if let Some((_, verdict)) = chosen {
-            return Ok(Some(verdict));
-        }
-        let mut question = question;
+        // `ask` consumes the produced value, which a Skip propagates.
+        let propagate = question
+            .produced
+            .clone();
+        let mut standing = question.standing;
+        let mut kind = question.kind;
+        let mut produced = question.produced;
+        let mut reviewable = question.reviewable;
         loop {
-            let offers = self.offers(question.standing);
-            let input = self
-                .driver
-                .ask(question, choices, &offers);
-            if let UserInput::Review = input {
-                match self.review()? {
-                    Reviewed::Amended => return Ok(None),
-                    Reviewed::Quit => return Ok(Some(UserInput::Quit)),
-                    Reviewed::Left => {}
+            let offers = self.offers(standing);
+            let input = match chosen.take() {
+                Some(verdict) => verdict,
+                None => {
+                    let question = Question {
+                        qualified: &qualified,
+                        marker,
+                        standing,
+                        kind,
+                        produced: produced.clone(),
+                        reviewable,
+                    };
+                    self.driver
+                        .ask(question, choices, &offers)
                 }
-                // Review left the walk where it was, so put the same question
-                // again. The produced value was consumed, so it is rebuilt as
-                // unit — a reviewed prompt has already shown what it settles.
-                question = Question {
-                    qualified: &qualified,
-                    marker,
-                    standing: offers_standing(&offers),
-                    kind: Kind::Prose,
-                    produced: Value::Unitus,
-                    reviewable: self.reviewable(),
-                };
-                continue;
-            }
-            return Ok(Some(input));
+            };
+            return Ok(match input {
+                UserInput::Done(value) => Conclusion::Completed(Outcome::Done(value)),
+                UserInput::Skip => Conclusion::Completed(Outcome::Skip(propagate.clone())),
+                UserInput::Fail(reason) => {
+                    Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason)))
+                }
+                UserInput::Override => Conclusion::Completed(Outcome::Done(Value::Unitus)),
+                UserInput::Quit => self.record_stop()?,
+                UserInput::Review => match self.review()? {
+                    Reviewed::Amended => Conclusion::Restarting,
+                    Reviewed::Quit => self.record_stop()?,
+                    // The same question again, its produced value having been
+                    // consumed by the prompt just left.
+                    Reviewed::Left => {
+                        standing = offers_standing(&offers);
+                        kind = Kind::Prose;
+                        produced = Value::Unitus;
+                        reviewable = self.reviewable();
+                        continue;
+                    }
+                },
+            });
         }
+    }
+
+    /// Put a prompt and lift what comes back. Review is not an answer: it steps
+    /// back through the trail and the same prompt is put again.
+    fn lift(
+        &mut self,
+        mut prompt: impl FnMut(&mut D) -> UserInput,
+    ) -> Result<Conclusion, RunnerError> {
+        loop {
+            return Ok(match prompt(&mut self.driver) {
+                UserInput::Done(value) => Conclusion::Completed(Outcome::Done(value)),
+                UserInput::Skip => Conclusion::Completed(Outcome::Skip(Value::Unitus)),
+                UserInput::Fail(reason) => {
+                    Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason)))
+                }
+                UserInput::Override => Conclusion::Completed(Outcome::Done(Value::Unitus)),
+                UserInput::Quit => self.record_stop()?,
+                UserInput::Review => match self.review()? {
+                    Reviewed::Amended => Conclusion::Restarting,
+                    Reviewed::Quit => self.record_stop()?,
+                    Reviewed::Left => continue,
+                },
+            });
+        }
+    }
+
+    fn solicit(
+        &mut self,
+        qualified: &str,
+        text: &str,
+        name: Option<&str>,
+        forma: Option<&str>,
+        seed: Option<&Value>,
+    ) -> Result<Conclusion, RunnerError> {
+        self.lift(|driver| driver.acquire(qualified, text, name, forma, seed))
     }
 
     /// Run the review cursor over the Enter-sites this walk has passed, until
@@ -1994,19 +1976,6 @@ impl<'i, D: Driver> Runner<'i, D> {
                 Some(next) => at = next,
                 None => {}
             }
-        }
-    }
-
-    /// Take a review pass from a prompt that settles no step of its own — an
-    /// acquire, a command, a boundary. `Some` is a conclusion to return, `None`
-    /// means review ended and the prompt is to be put again.
-    fn reviewed(&mut self) -> Result<Option<Conclusion>, RunnerError> {
-        match self.review()? {
-            Reviewed::Amended => Ok(Some(Conclusion::Restarting)),
-            Reviewed::Quit => self
-                .record_stop()
-                .map(Some),
-            Reviewed::Left => Ok(None),
         }
     }
 
@@ -2392,24 +2361,18 @@ impl<'i, D: Driver> Runner<'i, D> {
                 produced: Value::Unitus,
                 reviewable: self.reviewable(),
             };
-            let input = match self.settle(question, &[], "↙")? {
-                Some(input) => input,
-                None => return Ok(Conclusion::Restarting),
-            };
-            if let UserInput::Quit = input {
-                return self.record_stop();
+            let settled = self.settle(question, &[], "↙")?;
+            if let Conclusion::Completed(_) = &settled {
+                self.driver
+                    .show_verdict("↙", qualified, &verdict_from(&settled));
+                self.record_outcome(qualified, record_state(&settled))?;
             }
-            self.driver
-                .show_verdict("↙", qualified, &input);
-            let settled = outcome_from(input);
-            self.record_outcome(qualified, record_state(&settled))?;
             return Ok(settled);
         }
         let produced = match outcome {
             Outcome::Done(value) | Outcome::Skip(value) => value,
             _ => Value::Unitus,
         };
-        let propagate = produced.clone();
         let question = Question {
             qualified,
             marker: "↙",
@@ -2418,20 +2381,12 @@ impl<'i, D: Driver> Runner<'i, D> {
             produced,
             reviewable: self.reviewable(),
         };
-        let input = match self.settle(question, &[], "↙")? {
-            Some(input) => input,
-            None => return Ok(Conclusion::Restarting),
-        };
-        if let UserInput::Quit = input {
-            return self.record_stop();
+        let conclusion = self.settle(question, &[], "↙")?;
+        if let Conclusion::Completed(_) = &conclusion {
+            self.driver
+                .show_verdict("↙", qualified, &verdict_from(&conclusion));
+            self.record_outcome(qualified, record_state(&conclusion))?;
         }
-        self.driver
-            .show_verdict("↙", qualified, &input);
-        let conclusion = match input {
-            UserInput::Skip => Conclusion::Completed(Outcome::Skip(propagate)),
-            other => outcome_from(other),
-        };
-        self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
     }
 
@@ -2442,13 +2397,13 @@ impl<'i, D: Driver> Runner<'i, D> {
         &mut self,
         qualified: &str,
         supplied: Vec<Supplied>,
-        input: UserInput,
+        conclusion: Conclusion,
     ) -> Result<Conclusion, RunnerError> {
-        if let UserInput::Quit = input {
-            return self.record_stop();
+        if let Conclusion::Completed(_) = &conclusion {
+        } else {
+            return Ok(conclusion);
         }
         self.begin_scope(qualified, supplied)?;
-        let conclusion = outcome_from(input);
         self.record_outcome(qualified, record_state(&conclusion))?;
         Ok(conclusion)
     }
@@ -2591,21 +2546,6 @@ impl Rollup {
             Standing::Skip => Outcome::Skip(self.value),
             Standing::Done => Outcome::Done(self.value),
         }
-    }
-}
-
-/// Lift a `UserInput` from the prompt into a `Conclusion`. An Override records
-/// `Done ()`, severing the rollup so the failed child below does not propagate
-/// past this node. A Quit becomes `Stopped`.
-fn outcome_from(input: UserInput) -> Conclusion {
-    match input {
-        UserInput::Done(value) => Conclusion::Completed(Outcome::Done(value)),
-        UserInput::Override => Conclusion::Completed(Outcome::Done(Value::Unitus)),
-        UserInput::Skip => Conclusion::Completed(Outcome::Skip(Value::Unitus)),
-        UserInput::Fail(reason) => Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason))),
-        UserInput::Quit => Conclusion::Stopping,
-        // Review is handled at the prompt and never settles a node
-        UserInput::Review => unreachable!(),
     }
 }
 

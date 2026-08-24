@@ -1003,6 +1003,80 @@ cycle(s) : Situation -> Done
 }
 
 #[test]
+fn review_while_acquiring_puts_the_prompt_again() {
+    // <Up> at the implicit-argument prompt is not an answer: it records
+    // nothing and puts the same prompt again.
+    let source = r#"
+% technique v1
+
+main :
+
+{
+    <cycle>(?)
+}
+
+cycle(s) : Situation -> Done
+
+1.  First { s }
+        "#
+    .trim_ascii();
+    let document = parsing::parse(Path::new("Test.tq"), source).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let mut fixture = StoreFixture::new("review-acquire");
+    // Review, then the value; the rest answer the step and the scopes it closes.
+    let prompt = Mock::with_answers([
+        UserInput::Review,
+        UserInput::Done(Value::Unitus),
+        UserInput::Done(Value::Unitus),
+        UserInput::Done(Value::Unitus),
+        UserInput::Done(Value::Unitus),
+        UserInput::Done(Value::Unitus),
+    ]);
+    let mut runner = Runner::new(
+        &program,
+        fixture.take_appender(),
+        Ledger::new(),
+        prompt,
+        Library::stub(),
+    );
+    runner
+        .run(Environment::new())
+        .expect("run");
+
+    let prompt = runner.into_driver();
+    let asked = prompt
+        .events()
+        .iter()
+        .filter(|event| {
+            if let Event::Acquire { .. } = event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(asked, 2, "the prompt is put again after the review pass");
+
+    let pfftt = fixture.pfftt_contents();
+    assert_eq!(
+        pfftt
+            .lines()
+            .filter(|line| line.contains("/cycle: Begin"))
+            .count(),
+        1,
+        "the review pass records nothing, so the callee is entered once"
+    );
+    assert!(
+        pfftt
+            .lines()
+            .any(|line| line.contains("/cycle:/1 Begin")),
+        "the value given on the second pass supplies the call, which runs"
+    );
+}
+
+#[test]
 fn resolved_invoke_descends_into_subroutine() {
     let source = r#"
 % technique v1
