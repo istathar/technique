@@ -1708,13 +1708,7 @@ impl<'i> Parser<'i> {
                     _ => err,
                 })?;
             let span = self.span_since(start);
-            Ok(Expression::Multiline(
-                Multiline {
-                    language,
-                    lines,
-                },
-                span,
-            ))
+            Ok(Expression::Multiline(Multiline { language, lines }, span))
         } else if is_numeric(content) {
             let numeric = self.read_numeric()?;
             let span = self.span_since(start);

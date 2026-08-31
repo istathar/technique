@@ -899,7 +899,7 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_server::{ErrorCode, RequestId, ResponseKind};
+    use lsp_server::{ErrorCode, RequestId};
     use lsp_types::TextDocumentItem;
     use std::cell::RefCell;
     use std::convert::Infallible;
@@ -937,11 +937,11 @@ mod tests {
         match &messages[0] {
             Message::Response(response) => {
                 assert_eq!(response.id, RequestId::from(1));
-                match &response.response_kind {
-                    ResponseKind::Err { error } => {
+                match &response.response_result {
+                    Err(error) => {
                         assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
                     }
-                    ResponseKind::Ok { .. } => panic!("expected an error response"),
+                    Ok(..) => panic!("expected an error response"),
                 }
             }
             _ => panic!("expected a Response message"),
@@ -965,9 +965,9 @@ mod tests {
         match &messages[0] {
             Message::Response(response) => {
                 assert_eq!(response.id, RequestId::from(2));
-                match &response.response_kind {
-                    ResponseKind::Ok { result } => assert_eq!(*result, Value::Null),
-                    ResponseKind::Err { .. } => panic!("expected an ok response"),
+                match &response.response_result {
+                    Ok(result) => assert_eq!(*result, Value::Null),
+                    Err(..) => panic!("expected an ok response"),
                 }
             }
             _ => panic!("expected a Response message"),
@@ -1050,8 +1050,8 @@ mod tests {
         let messages = messages.into_inner();
         assert_eq!(messages.len(), 1);
         match &messages[0] {
-            Message::Response(response) => match &response.response_kind {
-                ResponseKind::Ok { result } => {
+            Message::Response(response) => match &response.response_result {
+                Ok(result) => {
                     let symbols: Option<Vec<SymbolInformation>> =
                         from_value(result.clone()).unwrap();
                     let symbols = symbols.unwrap();
@@ -1063,7 +1063,7 @@ mod tests {
                                 .starts_with("making_coffee"))
                     );
                 }
-                ResponseKind::Err { .. } => panic!("expected an ok response"),
+                Err(..) => panic!("expected an ok response"),
             },
             _ => panic!("expected a Response message"),
         }
