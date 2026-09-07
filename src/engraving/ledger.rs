@@ -48,7 +48,7 @@ impl Ledger {
         }
     }
 
-    /// Whether the trail already states this and still truly: the recorded
+    /// Whether the journal already states this and still truly: the recorded
     /// line stands, so there is nothing here to record.
     pub fn carries(&self, record: &Record) -> bool {
         match &record.state {

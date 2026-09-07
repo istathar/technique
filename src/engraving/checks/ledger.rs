@@ -310,7 +310,7 @@ fn an_orphaned_scope_does_not_adopt_what_opens_after_it() {
 fn a_resumed_scope_keeps_the_serial_it_was_entered_at() {
     // A scope opened after an orphan is found again on the next walk, so
     // resuming does not write a second `Begin` for it. It did, and each resume
-    // then mis-parented the next, ratcheting a duplicate spine onto the trail
+    // then mis-parented the next, ratcheting a duplicate spine onto the journal
     // one pair of records at a time.
     let ledger = fold(vec![
         record(1, "/task:", State::Begin(Vec::new())),

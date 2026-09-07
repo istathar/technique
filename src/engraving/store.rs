@@ -94,7 +94,7 @@ impl Store {
         Ok((run_id, run_dir))
     }
 
-    /// Read an existing run's trail back into memory, every record in the
+    /// Read an existing run's journal back into memory, every record in the
     /// order it was written.
     pub fn read(&self, run_id: RunId) -> Result<Vec<Record>, StoreError> {
         let run_dir = self

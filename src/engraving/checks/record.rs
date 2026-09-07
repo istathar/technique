@@ -179,7 +179,7 @@ fn create_and_open_round_trips_libraries() {
     assert_eq!(libraries, selected);
 }
 
-// One record line, for building a trail a test then writes to disk.
+// One record line, for building a journal a test then writes to disk.
 fn line(serial: u32, path: &str, state: State) -> String {
     format_record(&Record {
         recorded: format!("2026-05-14T12:00:{:02}Z", serial),

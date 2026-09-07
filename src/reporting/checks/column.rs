@@ -13,7 +13,7 @@ fn record(recorded: &str, path: &str, state: State) -> Record {
     }
 }
 
-fn trail() -> Vec<Record> {
+fn journal() -> Vec<Record> {
     vec![
         record(
             "2026-08-04T22:50:36.869Z",
@@ -40,7 +40,7 @@ fn trail() -> Vec<Record> {
 // to give is in the local zone, so only its lead-in is pinned here.
 #[test]
 fn heading_names_the_run() {
-    let text = render_console(&trail(), &[Column::Short], &Identity);
+    let text = render_console(&journal(), &[Column::Short], &Identity);
     let heading = text
         .lines()
         .next()
@@ -52,7 +52,7 @@ fn heading_names_the_run() {
 #[test]
 fn columns_align_in_the_order_given() {
     let columns = [Column::Short, Column::Offset, Column::State, Column::Value];
-    let text = render_console(&trail(), &columns, &Identity);
+    let text = render_console(&journal(), &columns, &Identity);
     let body: Vec<&str> = text
         .lines()
         .skip(2)
@@ -103,7 +103,7 @@ fn deep_paths_are_elided_at_the_front() {
 #[test]
 fn durations_fall_on_the_record_that_closed_the_scope() {
     let columns = [Column::Duration, Column::Short, Column::State];
-    let text = render_console(&trail(), &columns, &Identity);
+    let text = render_console(&journal(), &columns, &Identity);
     let body: Vec<&str> = text
         .lines()
         .skip(2)
@@ -198,7 +198,7 @@ fn executions_are_spanned_by_their_return() {
 #[test]
 fn json_carries_one_field_per_column() {
     let columns = [Column::Short, Column::Duration, Column::State];
-    let text = render_json(&trail(), &columns);
+    let text = render_json(&journal(), &columns);
     let body: Vec<&str> = text
         .lines()
         .collect();
@@ -218,7 +218,7 @@ fn json_carries_one_field_per_column() {
 #[test]
 fn timestamp_and_path_are_as_recorded() {
     let columns = [Column::Timestamp, Column::Path, Column::State];
-    let text = render_console(&trail(), &columns, &Identity);
+    let text = render_console(&journal(), &columns, &Identity);
     let body: Vec<&str> = text
         .lines()
         .skip(2)

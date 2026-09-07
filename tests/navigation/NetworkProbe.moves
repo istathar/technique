@@ -1,6 +1,6 @@
 # Every record of run 000181 of NetworkProbe.tq, interrupted at the live prompt
 # /connectivity_check:/VII/service_endpoint:/2, against all six keys. Blocks are
-# in trail order. A record is named by its FQP and verb, matching the .pfftt
+# in journal order. A record is named by its FQP and verb, matching the .pfftt
 # beside this file with the timestamp, run id, and payload elided; (live) is the
 # prompt the run is waiting at, and (refused) is a keystroke that does not move.
 #

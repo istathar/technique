@@ -5,7 +5,7 @@
 
 //! The walker tells the driver what to show and then asks for the step's
 //! outcome. A driver is assembled from two orthogonal axes: an `Output`
-//! presentation policy (`Visual` renders a trace, `Silent` shows nothing) and
+//! presentation policy (`Visual` renders a trail, `Silent` shows nothing) and
 //! a `Verdict` input policy (`Interactive` reads the user's keystrokes,
 //! `Batch` takes the body's value unattended). `Interface` composes the two.
 //! `Mock` is for testing.
@@ -323,7 +323,7 @@ pub trait Driver {
     /// `click("Actions")`) the user performs themselves: show the imperative
     /// `verb` and its `label` read-only on the prompt line and act on the
     /// user's verdict. `Done` means they did it, leaving a compact `{name}()`
-    /// trace; Skip / Fail decline and record the step; Quit stops. Unlike
+    /// trail; Skip / Fail decline and record the step; Quit stops. Unlike
     /// `command` there is no edit buffer. `Automatic` returns `Done` without
     /// prompting.
     fn action(&mut self, qualified: &str, name: &str, verb: &str, value: &Value) -> UserInput;
@@ -373,7 +373,7 @@ pub trait Driver {
     fn renderer(&self) -> &'static dyn Render;
 }
 
-/// The presentation axis: what a driver shows. `Visual` renders the trace to a
+/// The presentation axis: what a driver shows. `Visual` renders the trail to a
 /// terminal; `Silent` shows nothing. The `show_*` methods draw the line a
 /// `Batch` verdict still displays for a point it decides without prompting;
 /// `surface` hands an interactive verdict the raw sink to prompt on.
@@ -457,7 +457,7 @@ pub trait Verdict {
     }
 }
 
-/// A visual presentation to a terminal, rendering the trace shared by the
+/// A visual presentation to a terminal, rendering the trail shared by the
 /// interactive and batch drivers.
 pub struct Visual<W: Write> {
     output: W,
@@ -953,10 +953,10 @@ impl<O: Output, V: Verdict> Driver for Interface<O, V> {
 }
 
 /// Represents the interactive console prompt in a terminal: renders the
-/// output trace and reads the user's keystrokes.
+/// output trail and reads the user's keystrokes.
 pub type Console<W = io::Stdout, K = RealKeyboard> = Interface<Visual<W>, Interactive<K>>;
 
-/// Non-interactive driver that still renders the trace, then takes each
+/// Non-interactive driver that still renders the trail, then takes each
 /// body's value (if any) as the result.
 pub type Automatic<W = io::Stdout> = Interface<Visual<W>, Batch>;
 
@@ -1180,7 +1180,7 @@ fn prompt_review<K: Keys>(
     result
 }
 
-/// The reviewed position, drawn as the trace line it was — the `↑` marker, the
+/// The reviewed position, drawn as the trail line it was — the `↑` marker, the
 /// path, and the verdict it settled on — followed, once `<Esc>` has opened it,
 /// by the menu.
 fn draw_review(
@@ -1299,7 +1299,7 @@ fn boundary<'a>(qualified: &'a str, marker: &'a str) -> Question<'a> {
 
 /// Present a read-only action on the live prompt line — `» {path} {verb} {label} ▶`
 /// — and settle on the user's verdict. On Done it leaves a compact dark-grey
-/// trace `» {path} {name}()`; Skip / Fail / Quit clear the line for the step's
+/// trail `» {path} {name}()`; Skip / Fail / Quit clear the line for the step's
 /// own settle to follow.
 fn prompt_action<K: Keys>(
     mut out: &mut dyn Write,
@@ -1550,7 +1550,7 @@ fn render_conclude<W: Write>(out: &mut W, label: &str, verdict: &UserInput, rend
 }
 
 /// Render an automatically-run shell command on one line: `→ {path} $ {script}`,
-/// the whole line dark grey like the trace chrome so it reads as announce
+/// the whole line dark grey like the trail chrome so it reads as announce
 /// rather than as the command's own output that follows. The `$` stands in for
 /// a shell prompt (distinct from the user's `▶` edit prompt). Trailing
 /// whitespace is trimmed so a code block's blank tail line is not echoed.
@@ -2018,7 +2018,7 @@ impl Prompt {
 
 /// Draw the current interaction state onto the repeatedly-cleared prompt line.
 /// Layout: `{settle} {path} ▶ {content}` — the settle arrow and path are dark
-/// grey (matching the trace lines above), and ▶ is the shell-prompt character
+/// grey (matching the trail lines above), and ▶ is the shell-prompt character
 /// before the cursor/content area.
 fn draw(
     mut out: &mut dyn Write,
@@ -2060,7 +2060,7 @@ fn draw(
 }
 
 /// Draw the read-only action prompt line: `» {path} {verb} {label} ▶`, the verb
-/// in light brown, the marker and path dark grey like the trace lines above.
+/// in light brown, the marker and path dark grey like the trail lines above.
 fn draw_action(
     mut out: &mut dyn Write,
     qualified: &str,
@@ -2413,7 +2413,7 @@ fn text_key(buffer: &mut String, cursor: &mut usize, intent: Intent) -> bool {
 
 #[derive(Debug)]
 #[allow(dead_code)] // fields are read only via Debug
-enum Trace {
+enum Trail {
     Enter {
         path: String,
     },
@@ -2450,7 +2450,7 @@ fn disposition(input: &UserInput) -> Option<Standing> {
 }
 
 /// A driver for debugging that prints each value-bearing callback as a
-/// `Trace`, delegating decisions about outcomes to the inner wrapped driver.
+/// `Trail`, delegating decisions about outcomes to the inner wrapped driver.
 pub struct Transcript<D, W> {
     inner: D,
     output: W,
@@ -2466,12 +2466,12 @@ impl<D> Transcript<D, io::Stdout> {
 }
 
 impl<D, W: Write> Transcript<D, W> {
-    fn emit(&mut self, trace: Trace) {
-        let _ = writeln!(self.output, "{:#?}", trace);
+    fn emit(&mut self, trail: Trail) {
+        let _ = writeln!(self.output, "{:#?}", trail);
     }
 
-    fn trace_outcome(&mut self, path: &str, produced: Value, outcome: &UserInput) {
-        self.emit(Trace::Leave {
+    fn trail_outcome(&mut self, path: &str, produced: Value, outcome: &UserInput) {
+        self.emit(Trail::Leave {
             path: path.to_string(),
             outcome: disposition(outcome),
             result: produced,
@@ -2481,7 +2481,7 @@ impl<D, W: Write> Transcript<D, W> {
 
 impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     fn step(&mut self, qualified: &str, text: &str, description: &str, depth: usize) {
-        self.emit(Trace::Enter {
+        self.emit(Trail::Enter {
             path: announce(qualified, text),
         });
         self.inner
@@ -2489,7 +2489,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     }
 
     fn enter(&mut self, qualified: &str, text: &str) {
-        self.emit(Trace::Enter {
+        self.emit(Trail::Enter {
             path: announce(qualified, text),
         });
         self.inner
@@ -2526,7 +2526,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
         let outcome = self
             .inner
             .ask(question, choices, offers);
-        self.trace_outcome(&qualified, produced, &outcome);
+        self.trail_outcome(&qualified, produced, &outcome);
         outcome
     }
 
@@ -2536,7 +2536,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     }
 
     fn external(&mut self, qualified: &str) -> UserInput {
-        self.emit(Trace::External {
+        self.emit(Trail::External {
             path: qualified.to_string(),
         });
         self.inner
@@ -2544,7 +2544,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     }
 
     fn command(&mut self, qualified: &str, script: &str) -> UserInput {
-        self.emit(Trace::Execute {
+        self.emit(Trail::Execute {
             path: qualified.to_string(),
             script: script.to_string(),
         });
@@ -2553,7 +2553,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     }
 
     fn action(&mut self, qualified: &str, name: &str, verb: &str, value: &Value) -> UserInput {
-        self.emit(Trace::Execute {
+        self.emit(Trail::Execute {
             path: qualified.to_string(),
             script: format!("{} {}", verb, value.label())
                 .trim_end()
@@ -2564,7 +2564,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
     }
 
     fn section(&mut self, qualified: &str, numeral: &str, title: &str) {
-        self.emit(Trace::Enter {
+        self.emit(Trail::Enter {
             path: qualified.to_string(),
         });
         self.inner
@@ -2592,7 +2592,7 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
         } else {
             Value::Unitus
         };
-        self.emit(Trace::Acquire {
+        self.emit(Trail::Acquire {
             path: announce(qualified, text),
             name: name.map(|n| n.to_string()),
             forma: forma.map(|f| f.to_string()),

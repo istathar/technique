@@ -1,7 +1,7 @@
-//! Hold each `.moves` table against the trail it names.
+//! Hold each `.moves` table against the journal it names.
 //!
 //! A table sits beside a `.pfftt` of the same stem and states, for every record
-//! of that trail and for the live prompt, where each of the six motions lands.
+//! of that journal and for the live prompt, where each of the six motions lands.
 //! Blank lines and lines opening with `#` are ignored; every other line is
 //!
 //!     <path> <verb> <key> <destination>
@@ -10,7 +10,7 @@
 //! of Up, Down, Left, Right, PageUp, PageDown. `<destination>` is another
 //! `<path> <verb>`, or `(live)`, or `(refused)` where the motion does not move.
 //!
-//! Origins must stand in trail order and account for every record, one block
+//! Origins must stand in journal order and account for every record, one block
 //! each. That is what names a record, rather than a search: a procedure invoked
 //! twice writes the same path and verb both times, and only its place in the
 //! order tells the two apart.
@@ -20,7 +20,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use technique::engraving::{Motion, Position, Record, State, Trail, parse_records};
+use technique::engraving::{Journal, Motion, Position, Record, State, parse_records};
 use technique::runner::{Intent, intent};
 
 use crate::common::list_files;
@@ -50,11 +50,11 @@ fn name(record: &Record) -> String {
 }
 
 // How a position is written in a `.moves` table.
-fn render(trail: &Trail, position: Option<Position>) -> String {
+fn render(journal: &Journal, position: Option<Position>) -> String {
     match position {
         None => "(refused)".to_string(),
         Some(Position::Live) => "(live)".to_string(),
-        Some(Position::At(at)) => name(&trail.records()[at]),
+        Some(Position::At(at)) => name(&journal.records()[at]),
     }
 }
 
@@ -77,7 +77,7 @@ fn motion(key: &str) -> Motion {
     }
 }
 
-/// Walk every table beside a trail and require that the reusltant cursor
+/// Walk every table beside a journal and require that the reusltant cursor
 /// conforms to it. The table is a specification.
 #[test]
 fn ensure_moves() {
@@ -90,13 +90,13 @@ fn ensure_moves() {
         let expected_path = file.with_extension("pfftt");
         let content = fs::read_to_string(&expected_path).unwrap_or_else(|e| {
             panic!(
-                "missing trail {:?}: {:?} — add the .pfftt beside the table",
+                "missing journal {:?}: {:?} — add the .pfftt beside the table",
                 expected_path, e
             )
         });
         let records = parse_records(&content)
-            .unwrap_or_else(|e| panic!("trail {:?} is malformed: {:?}", expected_path, e));
-        let trail = Trail::new(&records);
+            .unwrap_or_else(|e| panic!("journal {:?} is malformed: {:?}", expected_path, e));
+        let journal = Journal::new(&records);
 
         let table = fs::read_to_string(file).expect("read the moves table");
         let mut at = 0;
@@ -150,7 +150,7 @@ fn ensure_moves() {
                 Position::At(at)
             };
 
-            let reached = render(&trail, trail.step(from, motion(key)));
+            let reached = render(&journal, journal.step(from, motion(key)));
             if reached != destination {
                 println!(
                     "{:?} line {}: {} {} reached {} not {}",

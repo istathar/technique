@@ -489,7 +489,7 @@ fn pre_completed_run_replays_writing_nothing() {
     let program = anonymous_with_body(body);
 
     // A run sealed at its entry: resuming it shows the walk again but states
-    // nothing, the trail already carrying the whole of it.
+    // nothing, the journal already carrying the whole of it.
     let ledger = ledger_of(&[
         (1, "/", State::Begin(Vec::new())),
         (2, "/1", State::Begin(Vec::new())),
@@ -1505,15 +1505,15 @@ check :
         Conclusion::Completed(Outcome::Done(_)) => {}
         other => panic!("expected Done, got {:?}", other),
     }
-    let trace = String::from_utf8(
+    let trail = String::from_utf8(
         runner
             .into_driver()
             .into_output(),
     )
     .expect("utf8");
-    assert!(trace.contains("→ check:/1 ✓"));
-    assert!(trace.contains("→ check:/2 ⊘"));
-    assert!(trace.contains("↙ check: ✓"));
+    assert!(trail.contains("→ check:/1 ✓"));
+    assert!(trail.contains("→ check:/2 ⊘"));
+    assert!(trail.contains("↙ check: ✓"));
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ Prepare the ground { exec("true") } before the steps.
         .filter(|r| r.path == "/check:/0")
         .map(|r| &r.state)
         .collect();
-    // The exec runs (its trace between Begin and the outcome); the prologue
+    // The exec runs (its record between Begin and the outcome); the prologue
     // holds real work, so it records that work's outcome — Done — rather than
     // being stamped Skip by its prose tail.
     let State::Begin(_) = zero[0] else {
@@ -2930,7 +2930,7 @@ fn deferred_invoke_is_prompted_and_recorded() {
         .collect();
     assert_eq!(asked, vec!["/<https://example.com/probe>"]);
 
-    // The trail records the Invoke call site at the caller's path and the
+    // The journal records the Invoke call site at the caller's path and the
     // Done outcome at the external's FQP.
     let pfftt = fixture.pfftt_contents();
     let records: Vec<(String, State)> = pfftt
@@ -3375,7 +3375,7 @@ cleanup :
 // user. The argument it was called with is recorded as an `Input` at the
 // callee's path so a resume can restore it.
 // Fold a prior run's records into a Ledger the way `Store::open` does, so a
-// test can stand a resume on a trail it states rather than one it has to run.
+// test can stand a resume on a journal it states rather than one it has to run.
 fn ledger_of(records: &[(u32, &str, State)]) -> Ledger {
     let mut ledger = Ledger::new();
     for (serial, path, state) in records {
@@ -3436,14 +3436,14 @@ fn invoke_records_supplied_input() {
         .run(Environment::new())
         .expect("run");
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
     assert!(
-        trail.contains("/hail: Begin ( \"World\" ~ name )"),
-        "trail was:\n{}",
-        trail
+        journal.contains("/hail: Begin ( \"World\" ~ name )"),
+        "journal was:\n{}",
+        journal
     );
 }
 
@@ -3667,7 +3667,7 @@ dry_towel(towel) : Towel -> ()
     };
 
     let mut ledger = Ledger::new();
-    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+    for record in crate::engraving::parse_records(&first).expect("journal parses") {
         ledger.apply(&record);
     }
 
@@ -3737,7 +3737,7 @@ II. Close Account
     assert!(first.contains("/audit:/I Skip"), "section I settled");
 
     let mut ledger = Ledger::new();
-    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+    for record in crate::engraving::parse_records(&first).expect("journal parses") {
         ledger.apply(&record);
     }
 
@@ -3813,7 +3813,7 @@ deploy :
     );
 
     let mut ledger = Ledger::new();
-    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+    for record in crate::engraving::parse_records(&first).expect("journal parses") {
         ledger.apply(&record);
     }
 
@@ -3866,7 +3866,7 @@ II. Report
     1.  File a return on { assets }
 "#;
 
-// The trail of a complete run of GUARD_SOURCE, with `/audit:/II/1` recorded
+// The journal of a complete run of GUARD_SOURCE, with `/audit:/II/1` recorded
 // as having read `assets` at whatever `stated` says. A prior value there is
 // what an amendment upstream leaves behind.
 fn guard_ledger(stated: i64) -> Ledger {
@@ -3904,22 +3904,22 @@ fn guard_ledger(stated: i64) -> Ledger {
 /// longer holds, and that step is redone.
 #[test]
 fn amended_input_reaches_beneath_completed_section() {
-    let trail = walk_guarded(3);
+    let journal = walk_guarded(3);
 
     assert!(
-        trail.contains("005 /audit:/II/1 Begin"),
+        journal.contains("005 /audit:/II/1 Begin"),
         "the stale step is redone, at the serial it was recorded under: {}",
-        trail
+        journal
     );
     assert!(
-        !trail.contains("/audit:/I/1"),
+        !journal.contains("/audit:/I/1"),
         "the step whose inputs still hold is replayed, writing nothing: {}",
-        trail
+        journal
     );
     assert!(
-        !trail.contains("/audit:/II Begin"),
+        !journal.contains("/audit:/II Begin"),
         "the section itself is replayed, writing nothing: {}",
-        trail
+        journal
     );
 }
 
@@ -3927,17 +3927,17 @@ fn amended_input_reaches_beneath_completed_section() {
 /// however deep inside a replayed scope it sits.
 #[test]
 fn unamended_input_leaves_completed_step_alone() {
-    let trail = walk_guarded(7);
+    let journal = walk_guarded(7);
 
     assert!(
-        !trail.contains("/audit:/II/1"),
+        !journal.contains("/audit:/II/1"),
         "nothing is redone when every recorded input still holds: {}",
-        trail
+        journal
     );
 }
 
 // Walk GUARD_SOURCE against a ledger stating `assets` was `stated` at
-// `/audit:/II/1`, returning the trail the walk appends.
+// `/audit:/II/1`, returning the journal the walk appends.
 fn walk_guarded(stated: i64) -> String {
     walk_recorded(GUARD_SOURCE, guard_ledger(stated))
 }
@@ -3956,9 +3956,9 @@ siblings :
     1.  Go { foreach a in ["x","y"] ; foreach b in ["p","q"] }
         "#
     .trim_ascii();
-    let trail = walk_fresh(source);
+    let journal = walk_fresh(source);
 
-    let iterations: Vec<&str> = trail
+    let iterations: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Begin ( \""))
         .filter_map(|line| {
@@ -3986,7 +3986,7 @@ tally :
         -   note it
 "#;
 
-// A trail of a run of TALLY_SOURCE whose loop recorded iterations at the given
+// A journal of a run of TALLY_SOURCE whose loop recorded iterations at the given
 // indices and items. The enclosing step is left unfinished, so the re-walk
 // reaches the loop rather than replaying the step whole.
 fn tally_ledger(recorded: &[(u32, usize, &str)]) -> Ledger {
@@ -4018,17 +4018,17 @@ fn tally_ledger(recorded: &[(u32, usize, &str)]) -> Ledger {
 /// claiming it takes it out of the pool.
 #[test]
 fn identical_items_each_get_their_own_iteration() {
-    let trail = walk_recorded(TALLY_SOURCE, tally_ledger(&[(3, 1, "one"), (5, 2, "two")]));
+    let journal = walk_recorded(TALLY_SOURCE, tally_ledger(&[(3, 1, "one"), (5, 2, "two")]));
 
     assert!(
-        trail.contains(r#"/tally:/1/[3] Begin ( "one" ~ item )"#),
+        journal.contains(r#"/tally:/1/[3] Begin ( "one" ~ item )"#),
         "the second `one` has no unclaimed match and runs fresh: {}",
-        trail
+        journal
     );
     assert!(
-        !trail.contains("/tally:/1/[1] Begin") && !trail.contains("/tally:/1/[2] Begin"),
+        !journal.contains("/tally:/1/[1] Begin") && !journal.contains("/tally:/1/[2] Begin"),
         "the two that matched are replayed, writing nothing: {}",
-        trail
+        journal
     );
 }
 
@@ -4045,24 +4045,24 @@ tally :
     1.  Count { foreach item in ["one","two","three"] }
         -   note it
 "#;
-    let trail = walk_recorded(
+    let journal = walk_recorded(
         source,
         tally_ledger(&[(3, 2, "one"), (5, 3, "orphan"), (7, 10, "two")]),
     );
 
     assert!(
-        trail.contains(r#"/tally:/1/[11] Begin ( "three" ~ item )"#),
+        journal.contains(r#"/tally:/1/[11] Begin ( "three" ~ item )"#),
         "the unmatched item lands beyond every recorded index: {}",
-        trail
+        journal
     );
 }
 
-// Walk a source with an empty ledger, returning the trail it appends.
+// Walk a source with an empty ledger, returning the journal it appends.
 fn walk_fresh(source: &str) -> String {
     walk_recorded(source, Ledger::new())
 }
 
-// Walk a source against a prior run's ledger, returning the trail it appends.
+// Walk a source against a prior run's ledger, returning the journal it appends.
 fn walk_recorded(source: &str, ledger: Ledger) -> String {
     let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
     let mut program = translate(&document).expect("translate");
@@ -4107,7 +4107,7 @@ survey :
     // step 3's own `Begin` — and one back reaches step 2's outcome, where
     // amending withdraws it. The restart is not
     // driven here — the runner returns Restarting and `drive()` is what walks
-    // again — so this asserts on the trail the first walk leaves.
+    // again — so this asserts on the journal the first walk leaves.
     let mut runner = Runner::new(
         &program,
         Appender::memory(),
@@ -4123,26 +4123,26 @@ survey :
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
     assert!(
-        trail.contains("/survey:/2 Revoke"),
+        journal.contains("/survey:/2 Revoke"),
         "the revocation reaches the file before the restart: {}",
-        trail
+        journal
     );
     assert!(
-        !trail.contains("/ Finish") && !trail.contains("/ Stop"),
+        !journal.contains("/ Finish") && !journal.contains("/ Stop"),
         "a restart is neither a finish nor a stop: {}",
-        trail
+        journal
     );
 
-    // Folding that trail is the state the restart walks against: step 2 has
+    // Folding that journal is the state the restart walks against: step 2 has
     // been withdrawn, and step 1 — an ancestor's sibling, off the spine — has
     // not.
     let mut ledger = Ledger::new();
-    for record in crate::engraving::parse_records(&trail).expect("trail parses") {
+    for record in crate::engraving::parse_records(&journal).expect("journal parses") {
         ledger.apply(&record);
     }
     let step = ledger
@@ -4190,7 +4190,7 @@ survey :
     );
     // Redone work is new work: the revoked line's serial is spent, and the
     // redo is recorded under a fresh one.
-    let spent = trail
+    let spent = journal
         .lines()
         .find(|line| line.contains("/survey:/2 Begin"))
         .and_then(|line| {
@@ -4309,11 +4309,11 @@ II. Analysis
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
-    let revocations: Vec<&str> = trail
+    let revocations: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Revoke"))
         .collect();
@@ -4328,7 +4328,7 @@ II. Analysis
             .collect::<Vec<&str>>(),
         vec!["/survey:/I/1"],
         "one revocation, at the reviewed position rather than the live one: {}",
-        trail
+        journal
     );
 }
 
@@ -4378,11 +4378,11 @@ dry_towel(towel) : Towel -> ()
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
-    let revoked: Vec<&str> = trail
+    let revoked: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Revoke"))
         .filter_map(|line| {
@@ -4394,7 +4394,7 @@ dry_towel(towel) : Towel -> ()
         revoked,
         vec!["/dry_towel:/2"],
         "the revocation lands inside the callee: {}",
-        trail
+        journal
     );
 }
 
@@ -4441,11 +4441,11 @@ survey :
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
-    let revoked: Vec<&str> = trail
+    let revoked: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Revoke"))
         .filter_map(|line| {
@@ -4457,7 +4457,7 @@ survey :
         revoked,
         vec!["/survey:/1"],
         "Down at the root reached the entry procedure rather than leaving review: {}",
-        trail
+        journal
     );
 }
 
@@ -4501,11 +4501,11 @@ survey :
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
-    let revoked: Vec<&str> = trail
+    let revoked: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Revoke"))
         .filter_map(|line| {
@@ -4517,12 +4517,12 @@ survey :
         revoked,
         vec!["/survey:/1"],
         "Down from the enclosing scope went back in rather than leaving review: {}",
-        trail
+        journal
     );
 }
 
 /// The dispatch record is written when the `Begin` it introduces is. Resuming
-/// into a call that had already started records neither, so the trail never
+/// into a call that had already started records neither, so the journal never
 /// shows a dispatch that opened nothing.
 #[test]
 fn resume_into_a_started_call_records_no_dispatch() {
@@ -4558,7 +4558,7 @@ helper :
     assert!(first.contains("Invoke helper:"), "the call was dispatched");
 
     let mut ledger = Ledger::new();
-    for record in crate::engraving::parse_records(&first).expect("trail parses") {
+    for record in crate::engraving::parse_records(&first).expect("journal parses") {
         ledger.apply(&record);
     }
     let mut runner = Runner::new(
@@ -4639,11 +4639,11 @@ helper :
         .expect("run");
     assert_eq!(conclusion, Conclusion::Restarting);
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
-    let revoked: Vec<&str> = trail
+    let revoked: Vec<&str> = journal
         .lines()
         .filter(|line| line.contains("Revoke"))
         .filter_map(|line| {
@@ -4655,7 +4655,7 @@ helper :
         revoked,
         vec!["/survey:/1"],
         "Up reached what settled before helper: was entered: {}",
-        trail
+        journal
     );
 }
 
@@ -4729,23 +4729,23 @@ survey :
         Conclusion::Completed(Outcome::Done(Value::Unitus))
     );
 
-    let trail = runner
+    let journal = runner
         .into_appender()
         .contents()
         .to_string();
     assert!(
-        trail.contains("/survey:/1 Revoke"),
+        journal.contains("/survey:/1 Revoke"),
         "the revocation reaches the file before the restart: {}",
-        trail
+        journal
     );
     assert!(
-        trail.contains(r#"Bind ( "7" ~ reading )"#),
+        journal.contains(r#"Bind ( "7" ~ reading )"#),
         "the replay records the value the user gave the second time: {}",
-        trail
+        journal
     );
     assert!(
-        trail.contains("/ Finish"),
+        journal.contains("/ Finish"),
         "the amended run walks through to its end: {}",
-        trail
+        journal
     );
 }

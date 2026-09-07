@@ -1,4 +1,4 @@
-use crate::engraving::{InvokeTarget, Motion, Position, Record, RunId, Serial, State, Trail};
+use crate::engraving::{InvokeTarget, Journal, Motion, Position, Record, RunId, Serial, State};
 
 fn record(serial: u32, path: &str, state: State) -> Record {
     Record {
@@ -10,7 +10,7 @@ fn record(serial: u32, path: &str, state: State) -> Record {
     }
 }
 
-// A step invoking a procedure, which the trail writes at a path beside the
+// A step invoking a procedure, which the journal writes at a path beside the
 // step rather than beneath it.
 fn calling() -> Vec<Record> {
     vec![
@@ -40,18 +40,18 @@ fn calling() -> Vec<Record> {
 #[test]
 fn a_callee_is_enclosed_by_its_call_site() {
     let records = calling();
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
     assert_eq!(
-        trail.step(Position::At(4), Motion::Left),
+        journal.step(Position::At(4), Motion::Left),
         Some(Position::At(2))
     );
     assert_eq!(
-        trail.step(Position::At(3), Motion::Right),
+        journal.step(Position::At(3), Motion::Right),
         Some(Position::At(4))
     );
-    assert_eq!(trail.step(Position::At(4), Motion::PageUp), None);
-    assert_eq!(trail.step(Position::At(4), Motion::PageDown), None);
+    assert_eq!(journal.step(Position::At(4), Motion::PageUp), None);
+    assert_eq!(journal.step(Position::At(4), Motion::PageDown), None);
 }
 
 /// Down off the last record reaches the prompt the run is waiting at, and a
@@ -59,23 +59,23 @@ fn a_callee_is_enclosed_by_its_call_site() {
 #[test]
 fn down_off_the_end_leaves_review() {
     let records = calling();
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
     assert_eq!(
-        trail.step(Position::At(7), Motion::Down),
+        journal.step(Position::At(7), Motion::Down),
         Some(Position::Live)
     );
     assert_eq!(
-        trail.step(Position::Live, Motion::Up),
+        journal.step(Position::Live, Motion::Up),
         Some(Position::At(7))
     );
-    assert_eq!(trail.step(Position::Live, Motion::Down), None);
+    assert_eq!(journal.step(Position::Live, Motion::Down), None);
 
     let mut ended = calling();
     ended.push(record(0, "/", State::Finish));
-    let trail = Trail::new(&ended);
-    assert_eq!(trail.last(), Some(Position::At(7)));
-    assert_eq!(trail.step(Position::At(7), Motion::Down), None);
-    assert_eq!(trail.step(Position::At(0), Motion::Up), None);
+    let journal = Journal::new(&ended);
+    assert_eq!(journal.last(), Some(Position::At(7)));
+    assert_eq!(journal.step(Position::At(7), Motion::Down), None);
+    assert_eq!(journal.step(Position::At(0), Motion::Up), None);
 }
 
 /// `Stop` and `Resume` bracket a session, not the walk. Review opens on the
@@ -88,24 +88,24 @@ fn a_session_boundary_is_not_a_position() {
     records.insert(6, record(0, "/", State::Stop));
     records.push(record(0, "/", State::Stop));
     records.push(record(0, "/", State::Resume));
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
-    assert_eq!(trail.last(), Some(Position::At(9)));
+    assert_eq!(journal.last(), Some(Position::At(9)));
     assert_eq!(
-        trail.step(Position::Live, Motion::Up),
+        journal.step(Position::Live, Motion::Up),
         Some(Position::At(9))
     );
     // 5 and 8 are the records either side of the interruption.
     assert_eq!(
-        trail.step(Position::At(8), Motion::Up),
+        journal.step(Position::At(8), Motion::Up),
         Some(Position::At(5))
     );
     assert_eq!(
-        trail.step(Position::At(5), Motion::Down),
+        journal.step(Position::At(5), Motion::Down),
         Some(Position::At(8))
     );
     assert_eq!(
-        trail.step(Position::At(9), Motion::Down),
+        journal.step(Position::At(9), Motion::Down),
         Some(Position::Live)
     );
 }
@@ -139,19 +139,19 @@ fn redispatched() -> Vec<Record> {
 #[test]
 fn a_redispatched_call_is_one_place_to_stand() {
     // Two sessions reaching the same call wrote the dispatch line twice, and
-    // pressing Up walked both showing the same thing each time. The trail keeps
+    // pressing Up walked both showing the same thing each time. The journal keeps
     // them; the cursor stops on the last. A second call in the same step writes
     // a different line at the same address, and stands on its own.
     let records = redispatched();
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
-    let at = trail
+    let at = journal
         .last()
         .expect("a position to open on");
     assert_eq!(at, Position::At(6));
-    assert_eq!(trail.step(at, Motion::Up), Some(Position::At(5)));
+    assert_eq!(journal.step(at, Motion::Up), Some(Position::At(5)));
     assert_eq!(
-        trail.step(Position::At(5), Motion::Up),
+        journal.step(Position::At(5), Motion::Up),
         Some(Position::At(1))
     );
 }
@@ -172,11 +172,11 @@ fn two_invocations_of_one_procedure_both_stand() {
         record(5, "/task:/check:", State::Done(None)),
         record(4, "/task:/2", State::Done(None)),
     ];
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
     let mut at = Position::At(8);
     for expected in [7, 6, 5, 4, 3, 2, 1, 0] {
-        at = trail
+        at = journal
             .step(at, Motion::Up)
             .expect("every record stands as its own position");
         assert_eq!(at, Position::At(expected));
@@ -198,15 +198,15 @@ fn an_amended_answer_is_the_only_one_review_reaches() {
         record(3, "/task:/1", State::Begin(Vec::new())),
         record(3, "/task:/1", State::Done(None)),
     ];
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
-    let at = trail
+    let at = journal
         .last()
         .expect("a position to open on");
     assert_eq!(at, Position::At(5));
-    assert_eq!(trail.step(at, Motion::Up), Some(Position::At(4)));
+    assert_eq!(journal.step(at, Motion::Up), Some(Position::At(4)));
     assert_eq!(
-        trail.step(Position::At(4), Motion::Up),
+        journal.step(Position::At(4), Motion::Up),
         Some(Position::At(0))
     );
 }
@@ -228,14 +228,14 @@ fn a_revoked_scope_takes_what_it_held_with_it() {
         record(5, "/task:/check:/1", State::Done(None)),
         record(4, "/task:/check:", State::Done(None)),
     ];
-    let trail = Trail::new(&records);
+    let journal = Journal::new(&records);
 
     let mut at = Position::At(9);
     for expected in [8, 7, 6, 0] {
-        at = trail
+        at = journal
             .step(at, Motion::Up)
             .expect("the standing execution walks back to the root");
         assert_eq!(at, Position::At(expected));
     }
-    assert_eq!(trail.step(at, Motion::Up), None);
+    assert_eq!(journal.step(at, Motion::Up), None);
 }

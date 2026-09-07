@@ -10,10 +10,10 @@ use crate::common::list_technique_documents;
 
 // Strip the volatile leading fields — timestamp and run-id — from each
 // recorded PFFTT line, leaving the `<path> <state>` tail. That tail is what
-// the expected trail pins; the timestamp and run-id vary from one run to the
+// the expected journal pins; the timestamp and run-id vary from one run to the
 // next.
-fn strip_timestamp_and_runid(trail: &str) -> Vec<String> {
-    trail
+fn strip_timestamp_and_runid(journal: &str) -> Vec<String> {
+    journal
         .lines()
         .map(|line| {
             line.splitn(3, ' ')
@@ -24,14 +24,14 @@ fn strip_timestamp_and_runid(trail: &str) -> Vec<String> {
         .collect()
 }
 
-// Rewrite an expected trail from a freshly captured walk. The head line and
+// Rewrite an expected journal from a freshly captured walk. The head line and
 // the run identifier are taken from the existing file; the timestamps are the
 // ones the capture just wrote.
 fn regenerate(path: &Path, existing: &str, captured: &str) {
     let head = existing
         .lines()
         .next()
-        .expect("expected trail has a Start line");
+        .expect("expected journal has a Start line");
     let run_id = head
         .split(' ')
         .nth(1)
@@ -62,11 +62,11 @@ fn regenerate(path: &Path, existing: &str, captured: &str) {
             .unwrap_or_default();
         out.push_str(&format!("{} {} {}\n", recorded, run_id, tail));
     }
-    fs::write(path, out).expect("rewrite expected trail");
+    fs::write(path, out).expect("rewrite expected journal");
     println!("regenerated {:?}", path);
 }
 
-/// Run every sample to completion headless, capturing the trail in memory,
+/// Run every sample to completion headless, capturing the journal in memory,
 /// and assert two things: the run finishes `Done`, and the recorded walk
 /// matches the expected `.pfftt` checked in beside the sample. The walk
 /// records pin each step's qualified path and outcome in walk order, so a
@@ -139,20 +139,20 @@ fn ensure_run() {
             .to_string();
         let recorded = strip_timestamp_and_runid(&captured);
 
-        // The expected file is a complete, valid PFFTT trail; its first line
+        // The expected file is a complete, valid PFFTT journal; its first line
         // is the opening Start lifecycle record, which the in-memory walk
         // capture does not include, so skip the first line before comparing
         // the walk records.
         let expected_path = file.with_extension("pfftt");
         let expected_text = fs::read_to_string(&expected_path).unwrap_or_else(|e| {
             panic!(
-                "missing expected trail {:?}: {:?} — add the .pfftt beside the sample",
+                "missing expected journal {:?}: {:?} — add the .pfftt beside the sample",
                 expected_path, e
             )
         });
-        // A change to what the walk records means every expected trail has to
+        // A change to what the walk records means every expected journal has to
         // be rewritten. Set TECHNIQUE_REGENERATE to have this test emit the
-        // walk it just captured, keeping the trail's existing `Start` line and
+        // walk it just captured, keeping the journal's existing `Start` line and
         // run identifier so the file stays the run it has always been. Read
         // the diff before committing it.
         if std::env::var("TECHNIQUE_REGENERATE").is_ok() {

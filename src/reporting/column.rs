@@ -1,4 +1,4 @@
-//! Rendering of the trail recorded for a completed or interrupted run.
+//! Rendering of the journal recorded for a completed or interrupted run.
 
 use std::collections::HashMap;
 
@@ -417,7 +417,7 @@ fn measure_times(records: &[Record]) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
     (stamps, spans)
 }
 
-// The abbreviated path the live trace shows, except at the root, which trims
+// The abbreviated path the live trail shows, except at the root, which trims
 // away to nothing and is shown as the `/` it is recorded as.
 fn shortened(path: &str) -> String {
     let text = display_path(path);

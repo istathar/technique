@@ -9,7 +9,7 @@ use super::evaluator::Environment;
 use super::library::{Library, Nature};
 use super::path::{PathSegment, QualifiedPath};
 use crate::engraving::{
-    Appender, InvokeTarget, Ledger, Position, Record, Serial, State, StoreError, Supplied, Trail,
+    Appender, InvokeTarget, Journal, Ledger, Position, Record, Serial, State, StoreError, Supplied,
 };
 use crate::language;
 use crate::program::{
@@ -137,7 +137,7 @@ pub struct Runner<'i, D: Driver> {
     /// body open on the old value rather than an empty buffer. Taken before the
     /// step's `Begin`, which overwrites the entry.
     seeds: Vec<Supplied>,
-    /// Every record this run has written, in order, seeded from the trail on
+    /// Every record this run has written, in order, seeded from the journal on
     /// resume. What review moves over. Never consulted to decide what to skip.
     records: Vec<Record>,
     /// The marker the next `Begin` belongs to, set by whichever path is about
@@ -185,7 +185,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         }
     }
 
-    /// Seed the trail review moves over: on a resume, every record the run has
+    /// Seed the journal review moves over: on a resume, every record the run has
     /// already written, so the walk can be looked back through as far as it
     /// goes rather than only as far as this session reached.
     pub fn with_records(mut self, records: Vec<Record>) -> Self {
@@ -194,7 +194,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     }
 
     /// Name the source document so the run brackets its walk double arrow
-    /// marked trace lines.
+    /// marked trail lines.
     pub fn with_document(mut self, document: String) -> Self {
         self.document = Some(document);
         self
@@ -247,7 +247,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     }
 
     /// Consume the runner and return the inner appender after a run completes.
-    /// Used to read the recorded trail of an in-memory `Appender`.
+    /// Used to read the recorded journal of an in-memory `Appender`.
     pub fn into_appender(self) -> Appender {
         self.appender
     }
@@ -475,7 +475,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 // stops. `Pure` builtins just announce and run.
                 let nature = self.executable_nature(executable);
                 let kind = self.execute_kind(executable);
-                // Pure builtins record nothing; only effectful calls are traced.
+                // Pure builtins record nothing; only effectful calls are recorded.
                 let effectful = if let Kind::Computable = kind {
                     false
                 } else {
@@ -1611,7 +1611,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 // A replayed step shows itself and descends, so the user watching
                 // sees the work being passed over and the guard reaches the scopes
                 // nested within it — but nothing is prompted for or recorded, and
-                // the bindings it made come from the trail rather than from walking
+                // the bindings it made come from the journal rather than from walking
                 // the body again.
                 //
                 // Standing at the recorded serial is what makes those descendants
@@ -1878,14 +1878,14 @@ impl<'i, D: Driver> Runner<'i, D> {
     /// The walker's position does not move — it is a Rust call stack, which
     /// cannot be rewound — so this is a modal loop at the live prompt.
     fn review(&mut self) -> Result<Reviewed, RunnerError> {
-        // The cursor reads the trail, and the loop below writes to it, so it
+        // The cursor reads the journal, and the loop below writes to it, so it
         // moves over a copy taken when review opens. Amending ends review, so
         // the copy cannot go stale underneath the cursor.
         let records = self
             .records
             .clone();
-        let trail = Trail::new(&records);
-        let mut at = match trail.last() {
+        let journal = Journal::new(&records);
+        let mut at = match journal.last() {
             Some(at) => at,
             None => return Ok(Reviewed::Left),
         };
@@ -1931,7 +1931,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             };
             // A refusal changes nothing; Down off the last record is the one
             // motion that ends review, and it is the way back to the prompt.
-            match trail.step(at, motion) {
+            match journal.step(at, motion) {
                 Some(Position::Live) => return Ok(Reviewed::Left),
                 Some(next) => at = next,
                 None => {}
@@ -1966,7 +1966,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     }
 
     /// Stand at a position the walk is replaying. The records it wrote the
-    /// first time are already in the trail, so review reaches it without the
+    /// first time are already in the journal, so review reaches it without the
     /// replay having to announce itself.
     fn enter_replayed(&mut self, serial: Serial) {
         self.serial = serial;
@@ -2080,7 +2080,7 @@ impl<'i, D: Driver> Runner<'i, D> {
         }
     }
 
-    /// Append one line to the trail, stamped with the moment it happened, the
+    /// Append one line to the journal, stamped with the moment it happened, the
     /// identifier of the run writing it, and the serial of the scope the walk
     /// is standing in. Every record the walk emits goes through here.
     fn record(&mut self, qualified: &str, state: State) -> Result<(), RunnerError> {
@@ -2108,7 +2108,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             path: qualified.to_string(),
             state,
         };
-        // A record the trail already states, still truly, stands as it is.
+        // A record the journal already states, still truly, stands as it is.
         if !self
             .ledger
             .carries(&record)
@@ -2190,7 +2190,7 @@ impl<'i, D: Driver> Runner<'i, D> {
     }
 
     /// Walk a completed scope's body for display alone. Recorded bindings are
-    /// re-established afterwards, so what the trail says a scope bound wins
+    /// re-established afterwards, so what the journal says a scope bound wins
     /// over whatever the replay walk happened to arrive at.
     fn replay(
         &mut self,
@@ -2707,7 +2707,7 @@ fn settled_by(state: &State) -> Option<UserInput> {
     }
 }
 
-/// The marker a record is drawn with, matching the one the live trace used.
+/// The marker a record is drawn with, matching the one the live trail used.
 /// The path says what kind of thing stands there — the grammar being read back
 /// is `render_segment` in `path.rs` — and the state says whether this is the
 /// way in or the way out. A dispatch is neither: it stands at the *caller's*

@@ -648,7 +648,7 @@ fn ctrl_c_reads_as_interrupted() {
 #[test]
 fn up_steps_back_only_where_something_has_settled() {
     // The gate the runner tests could not reach: <Up> raises a Review at a
-    // prompt with a trail behind it, and nothing at one without.
+    // prompt with a journal behind it, and nothing at one without.
     let mut it = Prompt::begin(&[], Value::Unitus, Standing::Done, &STEP);
     it.reviewable = true;
     assert_eq!(it.handle(Intent::Move(Motion::Up)), Some(UserInput::Review));
@@ -720,7 +720,7 @@ const UNANSWERED: [Offer; 1] = [Offer::Quit];
 
 #[test]
 fn review_moves_the_cursor() {
-    // Every motion is the cursor's, and the runner steps the trail with it.
+    // Every motion is the cursor's, and the runner steps the journal with it.
     let mut it = Reviewing::begin(&ANSWERED);
     assert_eq!(
         it.handle(Intent::Move(Motion::Up)),
@@ -790,7 +790,7 @@ fn review_esc_pops_one_level_and_pushes_at_the_bottom() {
 
 #[test]
 fn end_leaves_review_from_anywhere() {
-    // Six levels deep costs six presses of <Left> otherwise, and a trail that
+    // Six levels deep costs six presses of <Left> otherwise, and a journal that
     // reached its Finish refuses the <Down> that would otherwise be the way
     // out. An escape hatch a menu can stand in front of is not one.
     let mut it = Reviewing::begin(&ANSWERED);

@@ -20,7 +20,7 @@ pub enum StoreError {
 }
 
 pub use ledger::{Entry, Ledger};
-pub use navigation::{Motion, Position, Trail};
+pub use navigation::{Journal, Motion, Position};
 pub use record::{
     InvokeTarget, Record, RecordError, RunId, Serial, State, Supplied, display_path, parse_records,
 };

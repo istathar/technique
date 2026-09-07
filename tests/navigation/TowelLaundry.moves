@@ -1,5 +1,5 @@
 # Every record of run 000132 of TowelLaundry.tq, which ran to completion,
-# against all six keys. This trail is here for what NetworkProbe has none of:
+# against all six keys. This journal is here for what NetworkProbe has none of:
 # `foreach` iterations at /[1] and /[2], and one callee invoked twice, so that
 # stepping out of an iteration and back in is pinned. Conventions are as in
 # NetworkProbe.moves; the run reached Finish, so (live) is only what review

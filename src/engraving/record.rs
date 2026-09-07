@@ -487,7 +487,7 @@ fn parse_optional_value(rest: Option<&str>) -> Result<Option<value::Value>, Reco
 }
 
 // Single-line PFFTT text form for a runtime `value::Value`, so a completed
-// step's result survives in the trail and rehydrates on resume.
+// step's result survives in the journal and rehydrates on resume.
 //
 //   Unitus            -> ()
 //   Literali(s)       -> "<escaped>"

@@ -1,4 +1,4 @@
-//! Moving over the records of a trail: where the review cursor can rest and
+//! Moving over the records of a journal: where the review cursor can rest and
 //! what each keystroke reaches. Every record is a position; the tree the
 //! motions climb is the one the walk took, a callee enclosed by the step that
 //! invoked it rather than by the path it was written at.
@@ -56,15 +56,15 @@ struct Scope {
     outcome: Option<usize>,
 }
 
-/// The live tree of a trail, and the motions over it.
-pub struct Trail<'i> {
+/// The live tree of a journal, and the motions over it.
+pub struct Journal<'i> {
     records: &'i [Record],
     scopes: HashMap<Serial, Scope>,
     /// The scope each record was written against.
     within: Vec<Serial>,
     /// Scopes in the order they opened, which is the order peers stand in.
     opened: Vec<Serial>,
-    /// The records the cursor stops on, in trail order. `Stop`, `Resume` and
+    /// The records the cursor stops on, in journal order. `Stop`, `Resume` and
     /// `Finish` bracket a session rather than state anything the walk did, so
     /// they are not positions; `Start` is, being the root's own entry.
     order: Vec<usize>,
@@ -73,11 +73,11 @@ pub struct Trail<'i> {
     finished: bool,
 }
 
-impl<'i> Trail<'i> {
-    /// Fold a trail into the tree it built. The enclosing scope of each is
+impl<'i> Journal<'i> {
+    /// Fold a journal into the tree it built. The enclosing scope of each is
     /// whichever was innermost open when its `Begin` landed, so a procedure is
     /// enclosed by the step that invoked it.
-    pub fn new(records: &'i [Record]) -> Trail<'i> {
+    pub fn new(records: &'i [Record]) -> Journal<'i> {
         let mut scopes: HashMap<Serial, Scope> = HashMap::new();
         let mut within = Vec::with_capacity(records.len());
         let mut opened = Vec::new();
@@ -226,7 +226,7 @@ impl<'i> Trail<'i> {
             order.push(i);
         }
 
-        Trail {
+        Journal {
             records,
             scopes,
             within,

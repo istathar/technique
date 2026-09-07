@@ -106,7 +106,7 @@ fn drive<'i, D: Driver>(
 }
 
 /// Walk the program with the mode's driver wrapped in a `Transcript`, which
-/// streams the value trace to stderr while the wrapped driver runs as usual.
+/// streams the value trail to stderr while the wrapped driver runs as usual.
 /// Records nothing. Backs `run --output=native`, orthogonal to `--mode`.
 pub fn inspect<'i>(
     mode: Mode,
@@ -162,7 +162,7 @@ pub fn locate(run_id: RunId) -> Result<(PathBuf, Vec<String>), RunnerError> {
     Ok((document, libraries))
 }
 
-/// Load an existing run's recorded trail back into memory.
+/// Load an existing run's recorded journal back into memory.
 pub fn load(run_id: RunId) -> Result<Vec<Record>, RunnerError> {
     let store = Store::new(PathBuf::from(STORE_ROOT));
     Ok(store.read(run_id)?)
@@ -202,7 +202,7 @@ pub fn resume<'i>(
     )
 }
 
-// The boundary trace lines name the document by its file stem (`NetworkProbe`
+// The boundary trail lines name the document by its file stem (`NetworkProbe`
 // for `NetworkProbe.tq`), matching the PFFTT file the run writes to.
 fn document_label(document: &Path) -> String {
     document
