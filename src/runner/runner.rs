@@ -9,8 +9,7 @@ use super::evaluator::Environment;
 use super::library::{Library, Nature};
 use super::path::{PathSegment, QualifiedPath};
 use crate::engraving::{
-    Appender, InvokeTarget, Ledger, Motion, Position, Record, Serial, State, StoreError, Supplied,
-    Trail,
+    Appender, InvokeTarget, Ledger, Position, Record, Serial, State, StoreError, Supplied, Trail,
 };
 use crate::language;
 use crate::program::{
@@ -505,85 +504,52 @@ impl<'i, D: Driver> Runner<'i, D> {
                     }
                     Kind::System => {
                         let script = self.script_text(env, executable)?;
-                        // Review is not an answer: it steps back through the
-                        // trail and returns to this prompt unchanged.
-                        loop {
-                            break match self
-                                .driver
-                                .command(&qualified, &script)
-                            {
-                                UserInput::Review => match self.review()? {
-                                    Reviewed::Amended => return Ok(Conclusion::Restarting),
-                                    Reviewed::Quit => return self.record_stop(),
-                                    Reviewed::Left => continue,
-                                },
-                                UserInput::Done(chosen) => {
-                                    match super::evaluator::dispatch(
-                                        &self.library,
-                                        &self.context,
-                                        env,
-                                        executable,
-                                        Some(&[chosen]),
-                                    ) {
-                                        Ok(value) => {
-                                            Ok(Conclusion::Completed(Outcome::Done(value)))
-                                        }
-                                        // A non-zero exit throws to fail the step
-                                        // rather than aborting the run; the walk
-                                        // continues.
-                                        Err(RunnerError::CommandFailed(code)) => {
-                                            Ok(Conclusion::Throwing(Failure::Aborted(format!(
-                                                "External command exited with status {}",
-                                                code
-                                            ))))
-                                        }
-                                        Err(other) => Err(other),
-                                    }
+                        match self.lift(|driver| driver.command(&qualified, &script))? {
+                            Answer::Done(chosen) => match super::evaluator::dispatch(
+                                &self.library,
+                                &self.context,
+                                env,
+                                executable,
+                                Some(&[chosen]),
+                            ) {
+                                Ok(value) => Ok(Conclusion::Completed(Outcome::Done(value))),
+                                // A non-zero exit throws to fail the step rather
+                                // than aborting the run; the walk continues.
+                                Err(RunnerError::CommandFailed(code)) => {
+                                    Ok(Conclusion::Throwing(Failure::Aborted(format!(
+                                        "External command exited with status {}",
+                                        code
+                                    ))))
                                 }
-                                UserInput::Skip => {
-                                    Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
-                                }
-                                UserInput::Fail(reason) => {
-                                    Ok(Conclusion::Throwing(Failure::Aborted(reason)))
-                                }
-                                // a command prompt has no rollup to override
-                                UserInput::Override => unreachable!(),
-                                UserInput::Quit => self.record_stop(),
-                            };
+                                Err(other) => Err(other),
+                            },
+                            Answer::Skip => Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus))),
+                            Answer::Fail(reason) => {
+                                Ok(Conclusion::Throwing(Failure::Aborted(reason)))
+                            }
+                            Answer::Ended(conclusion) => Ok(conclusion),
                         }
                     }
                     Kind::Action => {
                         let (verb, value) = self.action_parts(env, executable)?;
-                        loop {
-                            break match self
-                                .driver
-                                .action(&qualified, &function, &verb, &value)
-                            {
-                                UserInput::Review => match self.review()? {
-                                    Reviewed::Amended => return Ok(Conclusion::Restarting),
-                                    Reviewed::Quit => return self.record_stop(),
-                                    Reviewed::Left => continue,
-                                },
-                                UserInput::Done(_) => {
-                                    let value = super::evaluator::dispatch(
-                                        &self.library,
-                                        &self.context,
-                                        env,
-                                        executable,
-                                        None,
-                                    )?;
-                                    Ok(Conclusion::Completed(Outcome::Done(value)))
-                                }
-                                UserInput::Skip => {
-                                    Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus)))
-                                }
-                                UserInput::Fail(reason) => {
-                                    Ok(Conclusion::Throwing(Failure::Aborted(reason)))
-                                }
-                                // an action prompt has no rollup to override
-                                UserInput::Override => unreachable!(),
-                                UserInput::Quit => self.record_stop(),
-                            };
+                        match self
+                            .lift(|driver| driver.action(&qualified, &function, &verb, &value))?
+                        {
+                            Answer::Done(_) => {
+                                let value = super::evaluator::dispatch(
+                                    &self.library,
+                                    &self.context,
+                                    env,
+                                    executable,
+                                    None,
+                                )?;
+                                Ok(Conclusion::Completed(Outcome::Done(value)))
+                            }
+                            Answer::Skip => Ok(Conclusion::Completed(Outcome::Skip(Value::Unitus))),
+                            Answer::Fail(reason) => {
+                                Ok(Conclusion::Throwing(Failure::Aborted(reason)))
+                            }
+                            Answer::Ended(conclusion) => Ok(conclusion),
                         }
                     }
                     Kind::Computable => {
@@ -1079,11 +1045,13 @@ impl<'i, D: Driver> Runner<'i, D> {
                 // Prompt at the departure, echoing the arguments flowing into
                 // the external Technque.
                 let echo = self.render_deferred_echo(env, &invocable.arguments)?;
-                let embarked = self.lift(|driver| driver.depart(&qualified, &echo))?;
+                let embarked = self
+                    .lift(|driver| driver.depart(&qualified, &echo))?
+                    .completed();
                 let conclusion = match embarked {
-                    Conclusion::Completed(Outcome::Done(_)) => {
-                        self.lift(|driver| driver.external(&qualified))?
-                    }
+                    Conclusion::Completed(Outcome::Done(_)) => self
+                        .lift(|driver| driver.external(&qualified))?
+                        .completed(),
                     declined => declined,
                 };
                 if let Conclusion::Completed(_) = &conclusion {
@@ -1871,24 +1839,19 @@ impl<'i, D: Driver> Runner<'i, D> {
         }
     }
 
-    /// Put a prompt and lift what comes back. Review is not an answer: it steps
-    /// back through the trail and the same prompt is put again.
-    fn lift(
-        &mut self,
-        mut prompt: impl FnMut(&mut D) -> UserInput,
-    ) -> Result<Conclusion, RunnerError> {
+    /// Take the driver's `UserInput` up into the runner's `Answer`, putting the
+    /// prompt again for as long as the user is away in the review cursor.
+    fn lift(&mut self, mut prompt: impl FnMut(&mut D) -> UserInput) -> Result<Answer, RunnerError> {
         loop {
             return Ok(match prompt(&mut self.driver) {
-                UserInput::Done(value) => Conclusion::Completed(Outcome::Done(value)),
-                UserInput::Skip => Conclusion::Completed(Outcome::Skip(Value::Unitus)),
-                UserInput::Fail(reason) => {
-                    Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason)))
-                }
-                UserInput::Override => Conclusion::Completed(Outcome::Done(Value::Unitus)),
-                UserInput::Quit => self.record_stop()?,
+                UserInput::Done(value) => Answer::Done(value),
+                UserInput::Skip => Answer::Skip,
+                UserInput::Fail(reason) => Answer::Fail(reason),
+                UserInput::Override => Answer::Done(Value::Unitus),
+                UserInput::Quit => Answer::Ended(self.record_stop()?),
                 UserInput::Review => match self.review()? {
-                    Reviewed::Amended => Conclusion::Restarting,
-                    Reviewed::Quit => self.record_stop()?,
+                    Reviewed::Amended => Answer::Ended(Conclusion::Restarting),
+                    Reviewed::Quit => Answer::Ended(self.record_stop()?),
                     Reviewed::Left => continue,
                 },
             });
@@ -1903,7 +1866,9 @@ impl<'i, D: Driver> Runner<'i, D> {
         forma: Option<&str>,
         seed: Option<&Value>,
     ) -> Result<Conclusion, RunnerError> {
-        self.lift(|driver| driver.acquire(qualified, text, name, forma, seed))
+        Ok(self
+            .lift(|driver| driver.acquire(qualified, text, name, forma, seed))?
+            .completed())
     }
 
     /// Run the review cursor over the Enter-sites this walk has passed, until
@@ -1940,12 +1905,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 .driver
                 .review(marker, &qualified, settled.as_ref(), &offers)
             {
-                Review::Back => Motion::Up,
-                Review::Forward => Motion::Down,
-                Review::OutOf => Motion::Left,
-                Review::Into => Motion::Right,
-                Review::Prior => Motion::PageUp,
-                Review::Next => Motion::PageDown,
+                Review::Move(motion) => motion,
                 Review::Chose(offer) => match offer {
                     Offer::Quit => return Ok(Reviewed::Quit),
                     // The answer was given here, so the position is not asked
@@ -2663,6 +2623,26 @@ fn reviewing(settled: Option<&UserInput>) -> Vec<Offer> {
     }
     offers.push(Offer::Quit);
     offers
+}
+
+/// A verdict given at a prompt, or `Ended` where the run stops or restarts
+/// instead of yielding one.
+enum Answer {
+    Done(Value),
+    Skip,
+    Fail(String),
+    Ended(Conclusion),
+}
+
+impl Answer {
+    fn completed(self) -> Conclusion {
+        match self {
+            Answer::Done(value) => Conclusion::Completed(Outcome::Done(value)),
+            Answer::Skip => Conclusion::Completed(Outcome::Skip(Value::Unitus)),
+            Answer::Fail(reason) => Conclusion::Completed(Outcome::Fail(Failure::Aborted(reason))),
+            Answer::Ended(conclusion) => conclusion,
+        }
+    }
 }
 
 /// How a spell in the review cursor ended.

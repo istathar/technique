@@ -18,7 +18,10 @@
 use std::fs;
 use std::path::Path;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use technique::engraving::{Motion, Position, Record, State, Trail, parse_records};
+use technique::runner::{Intent, intent};
 
 use crate::common::list_files;
 
@@ -55,15 +58,22 @@ fn render(trail: &Trail, position: Option<Position>) -> String {
     }
 }
 
+/// The motion a table's named key takes, read through the program's own
+/// binding rather than around it: rebind one of these six and every table
+/// naming it fails, which is what each row is a promise about.
 fn motion(key: &str) -> Motion {
-    match key {
-        "Up" => Motion::Up,
-        "Down" => Motion::Down,
-        "Left" => Motion::Left,
-        "Right" => Motion::Right,
-        "PageUp" => Motion::PageUp,
-        "PageDown" => Motion::PageDown,
+    let code = match key {
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
         other => panic!("unknown key {:?}", other),
+    };
+    match intent(KeyEvent::new(code, KeyModifiers::NONE)) {
+        Some(Intent::Move(motion)) => motion,
+        other => panic!("{:?} does not move the cursor: {:?}", key, other),
     }
 }
 

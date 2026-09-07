@@ -15,7 +15,7 @@ mod path;
 mod runner;
 
 pub use context::Context;
-pub use driver::{Headless, Mode};
+pub use driver::{Headless, Intent, Mode, intent};
 pub use evaluator::Environment;
 pub use library::{Builtin, Library, Native, library_for};
 pub use runner::{Conclusion, Outcome, Runner, RunnerError};

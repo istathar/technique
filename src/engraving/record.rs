@@ -169,7 +169,7 @@ pub(crate) fn format_record(record: &Record) -> String {
     text
 }
 
-fn format_state(out: &mut String, state: &State) {
+pub(super) fn format_state(out: &mut String, state: &State) {
     match state {
         State::Start { uri } => {
             out.push_str("Start ");
@@ -603,7 +603,7 @@ fn render_value_numeric(numeric: &value::Numeric) -> String {
     }
 }
 
-pub(crate) fn deserialize_value(text: &str) -> Result<value::Value, RecordError> {
+fn deserialize_value(text: &str) -> Result<value::Value, RecordError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(RecordError::MalformedState);

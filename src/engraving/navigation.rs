@@ -26,9 +26,9 @@
 //!
 //! `tests/navigation/` holds the worked examples.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::record::{Record, Serial, State};
+use super::record::{Record, Serial, State, format_state};
 
 /// Where the cursor rests. `Live` is the prompt the run is waiting at, which
 /// sits immediately after the last record and is not itself a record.
@@ -139,6 +139,66 @@ impl<'i> Trail<'i> {
             within.push(serial);
         }
 
+        // A revoked serial is nowhere to go back to, nor is anything under it:
+        // the replay redid that work under fresh serials.
+        let revoked: HashSet<Serial> = records
+            .iter()
+            .filter(|record| {
+                if let State::Revoke = record.state {
+                    true
+                } else {
+                    false
+                }
+            })
+            .map(|record| record.serial)
+            .collect();
+        let superseded = |serial: Serial| {
+            let mut at = serial;
+            loop {
+                if revoked.contains(&at) {
+                    return true;
+                }
+                match scopes
+                    .get(&at)
+                    .and_then(|scope| scope.parent)
+                {
+                    Some(parent) => at = parent,
+                    None => return false,
+                }
+            }
+        };
+
+        // A scope the cursor cannot rest in is not one to cross into either.
+        opened.retain(|serial| !superseded(*serial));
+
+        // A resumed walk rewrites lines it already recorded; only the last
+        // stands. Two records are the same record when they would write the
+        // same line, so a step calling two procedures keeps both.
+        let stated: Vec<String> = records
+            .iter()
+            .map(|record| {
+                let mut out = String::new();
+                format_state(&mut out, &record.state);
+                out
+            })
+            .collect();
+        let mut latest: HashMap<(Serial, &str, &str), usize> = HashMap::new();
+        for (i, record) in records
+            .iter()
+            .enumerate()
+        {
+            latest.insert(
+                (
+                    record.serial,
+                    record
+                        .path
+                        .as_str(),
+                    stated[i].as_str(),
+                ),
+                i,
+            );
+        }
+
         let mut order = Vec::with_capacity(records.len());
         let mut rank = vec![None; records.len()];
         for (i, record) in records
@@ -148,6 +208,19 @@ impl<'i> Trail<'i> {
             match record.state {
                 State::Stop | State::Resume | State::Finish => continue,
                 _ => {}
+            }
+            if superseded(record.serial) {
+                continue;
+            }
+            let address = (
+                record.serial,
+                record
+                    .path
+                    .as_str(),
+                stated[i].as_str(),
+            );
+            if latest.get(&address) != Some(&i) {
+                continue;
             }
             rank[i] = Some(order.len());
             order.push(i);
@@ -187,7 +260,7 @@ impl<'i> Trail<'i> {
             }
             Position::At(at) => at,
         };
-        // A record the cursor cannot rest on is no origin either.
+        // A record the cursor cannot rest on is no origin.
         let k = self.rank[at]?;
         match motion {
             Motion::Up => {
@@ -210,7 +283,7 @@ impl<'i> Trail<'i> {
                 let parent = self
                     .scope(at)?
                     .parent?;
-                Some(Position::At(self.landing(at, parent)?))
+                self.rest_at(self.landing(at, parent)?)
             }
             Motion::Right => {
                 let serial = self.within[at];
@@ -223,11 +296,17 @@ impl<'i> Trail<'i> {
                 } else {
                     kin.next()
                 }?;
-                Some(Position::At(self.landing(at, *child)?))
+                self.rest_at(self.landing(at, *child)?)
             }
             Motion::PageUp => self.peer(at, true),
             Motion::PageDown => self.peer(at, false),
         }
+    }
+
+    // A record the cursor cannot rest on is not a meaningful destination.
+    fn rest_at(&self, at: usize) -> Option<Position> {
+        self.rank[at]?;
+        Some(Position::At(at))
     }
 
     // The peer scope beside this record's.
@@ -244,7 +323,7 @@ impl<'i> Trail<'i> {
             .iter()
             .position(|s| *s == serial)?;
         let next = if back { k.checked_sub(1)? } else { k + 1 };
-        Some(Position::At(self.landing(at, *kin.get(next)?)?))
+        self.rest_at(self.landing(at, *kin.get(next)?)?)
     }
 
     // Whether the cursor rests on the plane a scope closes on rather than the

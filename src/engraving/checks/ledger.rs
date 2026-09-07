@@ -285,3 +285,55 @@ fn revoking_an_unknown_serial_changes_nothing() {
             .is_some()
     );
 }
+
+#[test]
+fn an_orphaned_scope_does_not_adopt_what_opens_after_it() {
+    // A run stopped inside step 1 leaves its `Begin` unpaired. Step 2 opens
+    // after it and belongs to the procedure, not to the step the walk happened
+    // to die in — the outcome of the enclosing scope closes whatever it still
+    // held open.
+    let ledger = fold(vec![
+        record(1, "/task:", State::Begin(Vec::new())),
+        record(2, "/task:/1", State::Begin(Vec::new())),
+        record(3, "/task:/1/helper:", State::Begin(Vec::new())),
+        record(2, "/task:/1", State::Done(None)),
+        record(4, "/task:/2", State::Begin(Vec::new())),
+    ]);
+
+    let entry = ledger
+        .look(Serial(1), "/task:/2")
+        .expect("step 2 keyed under its procedure");
+    assert_eq!(entry.serial, Serial(4));
+}
+
+#[test]
+fn a_resumed_scope_keeps_the_serial_it_was_entered_at() {
+    // A scope opened after an orphan is found again on the next walk, so
+    // resuming does not write a second `Begin` for it. It did, and each resume
+    // then mis-parented the next, ratcheting a duplicate spine onto the trail
+    // one pair of records at a time.
+    let ledger = fold(vec![
+        record(1, "/task:", State::Begin(Vec::new())),
+        record(2, "/task:/1", State::Begin(Vec::new())),
+        record(3, "/task:/1/helper:", State::Begin(Vec::new())),
+        record(2, "/task:/1", State::Done(None)),
+        record(4, "/task:/2", State::Begin(Vec::new())),
+        record(0, "/", State::Stop),
+        // The second walk re-enters the procedure and finishes the step it
+        // finds standing, rather than opening a fresh one beside it.
+        record(0, "/", State::Resume),
+        record(1, "/task:", State::Begin(Vec::new())),
+        record(4, "/task:/2", State::Done(None)),
+    ]);
+
+    assert_eq!(ledger.serial_for(Serial(1), "/task:/2"), Serial(4));
+    let entry = ledger
+        .look(Serial(1), "/task:/2")
+        .expect("step 2 still keyed under its procedure after the resume");
+    assert!(
+        entry
+            .outcome
+            .is_some(),
+        "the second walk's outcome lands on the entry the first walk opened"
+    );
+}

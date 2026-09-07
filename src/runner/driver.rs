@@ -21,7 +21,7 @@ use crossterm::style::{
 use crossterm::terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size};
 use crossterm::{cursor, queue};
 
-use crate::engraving::display_path;
+use crate::engraving::{Motion, display_path};
 use crate::formatting::{Identity, Render, Syntax};
 use crate::highlighting::Terminal;
 use crate::value::Value;
@@ -57,18 +57,10 @@ pub enum UserInput {
     Quit,
 }
 
-/// Where the review cursor goes next, over the records the run has written.
-/// Back and Forward step one record; OutOf and Into cross a scope boundary,
-/// landing on its `Begin`; Prior and Next cross a whole peer scope, which is
-/// how a user reaches past a forty-long list in one press.
+/// What the user did at the position the review cursor rests on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Review {
-    Back,
-    Forward,
-    Into,
-    OutOf,
-    Prior,
-    Next,
+    Move(Motion),
     /// What the user picked from the menu at the reviewed position. The same
     /// vocabulary the position was answered with the first time: a reviewed
     /// answer is changed by giving a different one, not by a verb of its own.
@@ -77,6 +69,149 @@ pub enum Review {
     Leave,
     /// Stop the run, as `<Ctrl>+<c>` does at any other prompt.
     Quit,
+}
+
+/// What a keystroke means. A key whose meaning depends on its holder stays
+/// physical, to be reinterpreted by it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Intent {
+    Accept,
+    Decline,
+    Move(Motion),
+    Typed(char),
+    Erase,
+    End,
+}
+
+/// The program's key bindings, whole. `None` is a key that carries no meaning,
+/// which the source reads past.
+pub fn intent(key: KeyEvent) -> Option<Intent> {
+    match key.code {
+        KeyCode::Enter => Some(Intent::Accept),
+        KeyCode::Esc => Some(Intent::Decline),
+        KeyCode::Up => Some(Intent::Move(Motion::Up)),
+        KeyCode::Down => Some(Intent::Move(Motion::Down)),
+        KeyCode::Left => Some(Intent::Move(Motion::Left)),
+        KeyCode::Right => Some(Intent::Move(Motion::Right)),
+        KeyCode::PageUp => Some(Intent::Move(Motion::PageUp)),
+        KeyCode::PageDown => Some(Intent::Move(Motion::PageDown)),
+        KeyCode::Backspace => Some(Intent::Erase),
+        KeyCode::End => Some(Intent::End),
+        // Shift is not read: it is how a capital arrives, rather than a
+        // modifier on one.
+        KeyCode::Char(c) => {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                None
+            } else {
+                Some(Intent::Typed(c))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Where an interactive prompt takes its keystrokes from. The source owns raw
+/// mode, the release filter and `<Ctrl>+<c>`.
+pub trait Keys {
+    type Held;
+
+    /// None where the terminal will not go raw.
+    fn hold(&mut self) -> Option<Self::Held>;
+
+    fn read(&mut self) -> Option<KeyEvent>;
+
+    /// None means interrupted: `<Ctrl>+<c>`, a read error, or no more keys.
+    fn next(&mut self) -> Option<Intent> {
+        loop {
+            let key = self.read()?;
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            if key
+                .modifiers
+                .contains(KeyModifiers::CONTROL)
+            {
+                if let KeyCode::Char('c') = key.code {
+                    // Believe it or not we actually have to handle <Ctrl>+<c>
+                    // explicitly when in raw mode. It is refusable nowhere, so
+                    // it never reaches a holder as an intent.
+                    return None;
+                }
+            }
+            if let Some(intent) = intent(key) {
+                return Some(intent);
+            }
+        }
+    }
+}
+
+/// Raw mode, restored when this drops — including on an unwind, which nothing
+/// did before.
+pub struct Raw;
+
+impl Drop for Raw {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+/// The user's terminal, which is what a run reads.
+pub struct RealKeyboard;
+
+impl Keys for RealKeyboard {
+    type Held = Raw;
+
+    fn hold(&mut self) -> Option<Raw> {
+        match enable_raw_mode() {
+            Ok(()) => Some(Raw),
+            Err(_) => None,
+        }
+    }
+
+    fn read(&mut self) -> Option<KeyEvent> {
+        loop {
+            match event::read() {
+                Ok(event::Event::Key(key)) => return Some(key),
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+/// A queue of keystrokes standing in for the terminal; run dry, it reads as
+/// interrupted.
+#[cfg(test)]
+pub struct MockKeyboard {
+    keys: std::collections::VecDeque<KeyEvent>,
+}
+
+#[cfg(test)]
+impl MockKeyboard {
+    pub fn new<I: IntoIterator<Item = KeyEvent>>(keys: I) -> Self {
+        MockKeyboard {
+            keys: keys
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Keys for MockKeyboard {
+    type Held = ();
+
+    fn hold(&mut self) -> Option<()> {
+        Some(())
+    }
+
+    fn read(&mut self) -> Option<KeyEvent> {
+        self.keys
+            .pop_front()
+    }
 }
 
 /// One prompt the walker puts to the user: where it stands, how it settles on
@@ -452,9 +587,11 @@ impl Output for Silent {
 /// default is confirmation: `<Enter>` completes the step, accepting the
 /// default action or the body's current value intact; the `<Esc>` menu offers
 /// Skip, Fail, Quit, sometimes Override, and (for an editable scalar) Edit.
-pub struct Interactive;
+pub struct Interactive<K: Keys = RealKeyboard> {
+    keys: K,
+}
 
-impl Verdict for Interactive {
+impl<K: Keys> Verdict for Interactive<K> {
     fn ask<O: Output>(
         &mut self,
         out: &mut O,
@@ -462,11 +599,11 @@ impl Verdict for Interactive {
         choices: &[&str],
         offers: &[Offer],
     ) -> UserInput {
-        prompt(out.surface(), question, choices, offers)
+        prompt(out.surface(), &mut self.keys, question, choices, offers)
     }
 
     fn command<O: Output>(&mut self, out: &mut O, qualified: &str, script: &str) -> UserInput {
-        prompt_command(out.surface(), qualified, script)
+        prompt_command(out.surface(), &mut self.keys, qualified, script)
     }
 
     fn action<O: Output>(
@@ -477,7 +614,7 @@ impl Verdict for Interactive {
         verb: &str,
         value: &Value,
     ) -> UserInput {
-        prompt_action(out.surface(), qualified, name, verb, value)
+        prompt_action(out.surface(), &mut self.keys, qualified, name, verb, value)
     }
 
     fn acquire<O: Output>(
@@ -498,12 +635,24 @@ impl Verdict for Interactive {
             name.unwrap_or("?"),
             forma.unwrap_or("?")
         );
-        prompt_acquire(out.surface(), &label, is_list_forma(forma), seed)
+        prompt_acquire(
+            out.surface(),
+            &mut self.keys,
+            &label,
+            is_list_forma(forma),
+            seed,
+        )
     }
 
     fn depart<O: Output>(&mut self, out: &mut O, qualified: &str, text: &str) -> UserInput {
         let announced = announce(qualified, text);
-        let input = prompt(out.surface(), boundary(&announced, "⇒"), &[], &BOUNDARY);
+        let input = prompt(
+            out.surface(),
+            &mut self.keys,
+            boundary(&announced, "⇒"),
+            &[],
+            &BOUNDARY,
+        );
         if let UserInput::Quit = input {
         } else {
             out.show_depart(&announced);
@@ -512,7 +661,13 @@ impl Verdict for Interactive {
     }
 
     fn external<O: Output>(&mut self, out: &mut O, qualified: &str) -> UserInput {
-        prompt(out.surface(), boundary(qualified, "⇐"), &[], &BOUNDARY)
+        prompt(
+            out.surface(),
+            &mut self.keys,
+            boundary(qualified, "⇐"),
+            &[],
+            &BOUNDARY,
+        )
     }
 
     fn review<O: Output>(
@@ -523,7 +678,14 @@ impl Verdict for Interactive {
         settled: Option<&UserInput>,
         offers: &[Offer],
     ) -> Review {
-        prompt_review(out.surface(), marker, qualified, settled, offers)
+        prompt_review(
+            out.surface(),
+            &mut self.keys,
+            marker,
+            qualified,
+            settled,
+            offers,
+        )
     }
 }
 
@@ -792,7 +954,7 @@ impl<O: Output, V: Verdict> Driver for Interface<O, V> {
 
 /// Represents the interactive console prompt in a terminal: renders the
 /// output trace and reads the user's keystrokes.
-pub type Console<W = io::Stdout> = Interface<Visual<W>, Interactive>;
+pub type Console<W = io::Stdout, K = RealKeyboard> = Interface<Visual<W>, Interactive<K>>;
 
 /// Non-interactive driver that still renders the trace, then takes each
 /// body's value (if any) as the result.
@@ -814,7 +976,7 @@ impl Console<io::Stdout> {
                 output: io::stdout(),
                 renderer: &Terminal,
             },
-            verdict: Interactive,
+            verdict: Interactive { keys: RealKeyboard },
         }
     }
 }
@@ -827,8 +989,29 @@ impl<W: Write> Console<W> {
                 output,
                 renderer: &Terminal,
             },
-            verdict: Interactive,
+            verdict: Interactive { keys: RealKeyboard },
         }
+    }
+}
+
+#[cfg(test)]
+impl<W: Write, K: Keys> Console<W, K> {
+    /// Drive the prompts from a queue of keystrokes rather than a terminal,
+    /// which is the whole of what a test does differently.
+    pub fn with_keys(output: W, keys: K) -> Self {
+        Interface {
+            out: Visual {
+                output,
+                renderer: &Terminal,
+            },
+            verdict: Interactive { keys },
+        }
+    }
+
+    /// Read back what the run drew, alongside what it recorded.
+    pub fn into_output(self) -> W {
+        self.out
+            .output
     }
 }
 
@@ -906,8 +1089,9 @@ impl Scripted {
 
 /// Run one interactive prompt and return the user's verdict, clearing the
 /// live `▶` row on settle.
-fn prompt(
+fn prompt<K: Keys>(
     mut out: &mut dyn Write,
+    keys: &mut K,
     question: Question<'_>,
     choices: &[&str],
     offers: &[Offer],
@@ -918,7 +1102,7 @@ fn prompt(
         .to_string();
     let mut seeded = Prompt::begin(choices, question.produced, question.standing, offers);
     seeded.reviewable = question.reviewable;
-    let result = interact(out, seeded, |o, i| draw(o, &qualified, &marker, i));
+    let result = interact(out, keys, seeded, |o, i| draw(o, &qualified, &marker, i));
     let _ = queue!(
         &mut out,
         cursor::MoveToColumn(0),
@@ -941,82 +1125,49 @@ fn prompt(
 ///
 /// `<Enter>` does nothing here. It means "settle this" at every other prompt,
 /// and a reviewed position has nothing to settle; binding it to Quit, the one
-/// destructive action on offer, would be a trap.
-fn prompt_review(
+/// destructive action on offer, would be a trap. `<End>` is the way out from
+/// six levels deep in one press.
+fn prompt_review<K: Keys>(
     mut out: &mut dyn Write,
+    keys: &mut K,
     marker: &str,
     qualified: &str,
     settled: Option<&UserInput>,
     offered: &[Offer],
 ) -> Review {
     let qualified = display_path(qualified);
-    if enable_raw_mode().is_err() {
-        let _ = writeln!(out, "(could not enter raw mode)");
-        return Review::Leave;
-    }
-    let mut menu: Option<usize> = None;
-    let result = loop {
-        if draw_review(out, marker, &qualified, settled, offered, menu).is_err() {
-            break Review::Leave;
-        }
-        let key = match event::read() {
-            Ok(event::Event::Key(key)) if key.kind != KeyEventKind::Release => key,
-            Ok(_) => continue,
-            Err(_) => break Review::Leave,
+    let mut reviewing = Reviewing::begin(offered);
+    let result = {
+        let _raw = match keys.hold() {
+            Some(raw) => raw,
+            None => {
+                let _ = writeln!(out, "(could not enter raw mode)");
+                return Review::Quit;
+            }
         };
-        if key
-            .modifiers
-            .contains(KeyModifiers::CONTROL)
-        {
-            if let KeyCode::Char('c') = key.code {
-                // As at every other prompt in raw mode, this has to be caught
-                // explicitly, and it means the same thing here as there.
+        loop {
+            if draw_review(out, marker, &qualified, settled, &reviewing).is_err() {
                 break Review::Quit;
             }
-        }
-        match menu {
-            Some(at) => match key.code {
-                KeyCode::Left => menu = Some(at.saturating_sub(1)),
-                KeyCode::Right => menu = Some((at + 1).min(offered.len() - 1)),
-                KeyCode::Enter => break Review::Chose(offered[at]),
-                KeyCode::Esc => menu = None,
-                KeyCode::Char(c) => {
-                    let typed = c.to_ascii_lowercase();
-                    if let Some(found) = offered
-                        .iter()
-                        .find(|offer| offer.shortcut() == typed)
-                    {
-                        break Review::Chose(*found);
+            match keys.next() {
+                None => break Review::Quit,
+                Some(intent) => {
+                    if let Some(answer) = reviewing.handle(intent) {
+                        break answer;
                     }
                 }
-                _ => {}
-            },
-            None => match key.code {
-                KeyCode::Up => break Review::Back,
-                KeyCode::Down => break Review::Forward,
-                KeyCode::Right => break Review::Into,
-                KeyCode::Left => break Review::OutOf,
-                KeyCode::PageUp => break Review::Prior,
-                KeyCode::PageDown => break Review::Next,
-                KeyCode::Esc => menu = Some(0),
-                _ => {}
-            },
+            }
         }
     };
     // A motion returns so the cursor can be moved and the line drawn again, so
     // the line is left standing: clearing it here and redrawing there blanks it
     // between every keypress, which is seen as flicker. Only an answer, a
     // departure or a quit ends review, and only those take the line down.
-    let moving = match result {
-        Review::Back
-        | Review::Forward
-        | Review::Into
-        | Review::OutOf
-        | Review::Prior
-        | Review::Next => true,
-        Review::Chose(_) | Review::Leave | Review::Quit => false,
+    let moving = if let Review::Move(_) = result {
+        true
+    } else {
+        false
     };
-    let _ = disable_raw_mode();
     if !moving {
         let _ = queue!(
             &mut out,
@@ -1037,8 +1188,7 @@ fn draw_review(
     marker: &str,
     qualified: &str,
     settled: Option<&UserInput>,
-    offered: &[Offer],
-    menu: Option<usize>,
+    reviewing: &Reviewing,
 ) -> io::Result<()> {
     queue!(
         &mut out,
@@ -1055,28 +1205,79 @@ fn draw_review(
         write!(out, "{}", Terminal.style(syntax, glyph))?;
     }
     write!(out, "   ")?;
-    match menu {
-        None => {}
-        Some(at) => {
-            for (i, offer) in offered
-                .iter()
-                .enumerate()
-            {
-                let label = offer.label();
-                if i > 0 {
-                    write!(out, "  ")?;
-                }
-                if i == at {
-                    queue!(&mut out, SetAttribute(Attribute::Reverse))?;
-                    write!(out, " {} ", label)?;
-                    queue!(&mut out, SetAttribute(Attribute::Reset))?;
-                } else {
-                    write!(out, " {} ", label)?;
-                }
-            }
-        }
+    if let Some(menu) = &reviewing.menu {
+        render_menu(out, menu, |_| true)?;
     }
     out.flush()
+}
+
+/// The keyboard's state at a reviewed position. `Prompt`'s sibling.
+struct Reviewing {
+    offers: Vec<Offer>,
+    menu: Option<Menu>,
+}
+
+impl Reviewing {
+    fn begin(offers: &[Offer]) -> Self {
+        Reviewing {
+            offers: offers.to_vec(),
+            menu: None,
+        }
+    }
+
+    fn handle(&mut self, intent: Intent) -> Option<Review> {
+        // An escape hatch a menu can stand in front of is not one.
+        if let Intent::End = intent {
+            return Some(Review::Leave);
+        }
+        if self
+            .menu
+            .is_some()
+        {
+            self.menu_key(intent)
+        } else {
+            self.position_key(intent)
+        }
+    }
+
+    // `reviewing` withholds an offer rather than greying it, so nothing here
+    // is ever disabled.
+    fn menu_key(&mut self, intent: Intent) -> Option<Review> {
+        match intent {
+            Intent::Move(motion) => {
+                self.menu
+                    .as_mut()?
+                    .step(motion, |_| true);
+                None
+            }
+            Intent::Accept => Some(Review::Chose(
+                self.menu
+                    .as_ref()?
+                    .chosen(),
+            )),
+            Intent::Typed(c) => self
+                .menu
+                .as_mut()?
+                .select(c, |_| true)
+                .map(Review::Chose),
+            Intent::Decline => {
+                self.menu = None;
+                None
+            }
+            Intent::Erase | Intent::End => None,
+        }
+    }
+
+    fn position_key(&mut self, intent: Intent) -> Option<Review> {
+        match intent {
+            Intent::Move(motion) => Some(Review::Move(motion)),
+            Intent::Decline => {
+                self.menu = Some(Menu::open(&self.offers, 0));
+                None
+            }
+            Intent::Accept | Intent::Typed(_) | Intent::Erase | Intent::End => None,
+        }
+    }
 }
 
 /// The offer set at a document boundary — a `⇒` departure or a `⇐` return.
@@ -1100,8 +1301,9 @@ fn boundary<'a>(qualified: &'a str, marker: &'a str) -> Question<'a> {
 /// — and settle on the user's verdict. On Done it leaves a compact dark-grey
 /// trace `» {path} {name}()`; Skip / Fail / Quit clear the line for the step's
 /// own settle to follow.
-fn prompt_action(
+fn prompt_action<K: Keys>(
     mut out: &mut dyn Write,
+    keys: &mut K,
     qualified: &str,
     name: &str,
     verb: &str,
@@ -1109,7 +1311,7 @@ fn prompt_action(
 ) -> UserInput {
     let qualified = display_path(qualified);
     let seeded = Prompt::begin(&[], Value::Unitus, Standing::Done, &BOUNDARY);
-    let result = interact(out, seeded, |o, i| {
+    let result = interact(out, keys, seeded, |o, i| {
         draw_action(o, &qualified, verb, value, i)
     });
     let _ = queue!(
@@ -1133,7 +1335,12 @@ fn prompt_action(
 /// typing edits it in place, Esc opens the menu (Skip / Fail / Quit). On
 /// `Done` the live line is redrawn in grey with the interactive prompt marker
 /// becoming the '$', reminiscent of a shell.
-fn prompt_command(mut out: &mut dyn Write, qualified: &str, script: &str) -> UserInput {
+fn prompt_command<K: Keys>(
+    mut out: &mut dyn Write,
+    keys: &mut K,
+    qualified: &str,
+    script: &str,
+) -> UserInput {
     let qualified = display_path(qualified);
     // Seed the editable line
     let script = script.trim_end();
@@ -1144,6 +1351,7 @@ fn prompt_command(mut out: &mut dyn Write, qualified: &str, script: &str) -> Use
     );
     let result = interact(
         out,
+        keys,
         Prompt {
             field,
             menu: None,
@@ -1179,8 +1387,9 @@ fn prompt_command(mut out: &mut dyn Write, qualified: &str, script: &str) -> Use
 /// Solicit a deferred input on the `▶` prompt line: `<Enter>` accepts the
 /// empty default, typing overrides it; the `<Esc>` menu and `<Ctrl-C>` abandon
 /// the call.
-fn prompt_acquire(
+fn prompt_acquire<K: Keys>(
     mut out: &mut dyn Write,
+    keys: &mut K,
     label: &str,
     list: bool,
     seed: Option<&Value>,
@@ -1193,6 +1402,7 @@ fn prompt_acquire(
     let field = edit(buffer, original, list);
     let result = interact(
         out,
+        keys,
         Prompt {
             field,
             menu: None,
@@ -1215,33 +1425,35 @@ fn prompt_acquire(
 /// Drive one raw-mode interaction to a settled `UserInput`, leaving the prompt
 /// row cleared. Shared by the step/scope prompt and the exec command prompt; the
 /// caller writes whatever record line it wants afterward.
-fn interact(
+fn interact<K: Keys>(
     mut out: &mut dyn Write,
+    keys: &mut K,
     mut interaction: Prompt,
     mut render: impl FnMut(&mut dyn Write, &Prompt) -> io::Result<()>,
 ) -> UserInput {
     // The interactive path is guarded on stdout being a terminal before the
     // walk begins, so a raw-mode failure here is an unexpected terminal fault
     // rather than a redirect; bail by quitting.
-    if enable_raw_mode().is_err() {
-        let _ = writeln!(out, "(could not enter raw mode)");
-        return UserInput::Quit;
-    }
+    let _raw = match keys.hold() {
+        Some(raw) => raw,
+        None => {
+            let _ = writeln!(out, "(could not enter raw mode)");
+            return UserInput::Quit;
+        }
+    };
     let result = loop {
         if render(out, &interaction).is_err() {
             break UserInput::Quit;
         }
-        match event::read() {
-            Ok(event::Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                if let Some(input) = interaction.handle(key) {
+        match keys.next() {
+            None => break UserInput::Quit,
+            Some(intent) => {
+                if let Some(input) = interaction.handle(intent) {
                     break input;
                 }
             }
-            Ok(_) => {}
-            Err(_) => break UserInput::Quit,
         }
     };
-    let _ = disable_raw_mode();
     let _ = queue!(&mut out, cursor::Show);
     let _ = out.flush();
     result
@@ -1473,6 +1685,55 @@ enum Field {
     },
 }
 
+/// A row of offers with one highlighted: what `<Esc>` opens, at the live
+/// prompt and in review alike.
+struct Menu {
+    offers: Vec<Offer>,
+    active: usize,
+}
+
+impl Menu {
+    fn open(offers: &[Offer], active: usize) -> Self {
+        Menu {
+            offers: offers.to_vec(),
+            active,
+        }
+    }
+
+    /// Stops at the edge rather than wrapping. Only Left and Right move a row.
+    fn step(&mut self, motion: Motion, enabled: impl Fn(Offer) -> bool) {
+        let found = match motion {
+            Motion::Left => (0..self.active)
+                .rev()
+                .find(|&i| enabled(self.offers[i])),
+            Motion::Right => ((self.active + 1)
+                ..self
+                    .offers
+                    .len())
+                .find(|&i| enabled(self.offers[i])),
+            _ => None,
+        };
+        if let Some(at) = found {
+            self.active = at;
+        }
+    }
+
+    /// A letter naming nothing on the row, or something greyed, does nothing.
+    fn select(&mut self, typed: char, enabled: impl Fn(Offer) -> bool) -> Option<Offer> {
+        let typed = typed.to_ascii_lowercase();
+        let at = self
+            .offers
+            .iter()
+            .position(|offer| offer.shortcut() == typed && enabled(*offer))?;
+        self.active = at;
+        Some(self.offers[at])
+    }
+
+    fn chosen(&self) -> Offer {
+        self.offers[self.active]
+    }
+}
+
 /// The inline buffer soliciting a fail reason, shown on the menu line while
 /// Fail is highlighted. A submenu of the menu, not a Field: the underlying
 /// `Frozen` value is left untouched so backing out restores it.
@@ -1487,7 +1748,7 @@ struct Reason {
 /// while `menu` rests on Fail.
 struct Prompt {
     field: Field,
-    menu: Option<usize>,
+    menu: Option<Menu>,
     reason: Option<Reason>,
     /// The node's rolled-up default — `Done` for an ordinary prompt, `Fail` or
     /// `Skip` where a child settled that way. Colours the `▶` and is where the
@@ -1495,8 +1756,7 @@ struct Prompt {
     standing: Standing,
     /// What the walker said is legal here. The menu shows exactly these.
     offers: Vec<Offer>,
-    /// Whether `<Up>` steps back into what has settled. False at the command,
-    /// action, acquire and boundary prompts, which review does not reach.
+    /// Whether `<Up>` steps back into what has settled.
     reviewable: bool,
 }
 
@@ -1532,28 +1792,13 @@ impl Prompt {
         }
     }
 
-    /// Whether an offered item is currently selectable. Everything the walker
-    /// offered is legal by construction; the one exception is `Edit`, which
-    /// needs the produced value to be an editable scalar — a property of the
-    /// value's shape that the walker cannot know. Navigation skips a disabled
-    /// item and the menu never opens onto one.
-    fn enabled(&self, item: Offer) -> bool {
-        match item {
-            Offer::Edit => match &self.field {
-                Field::Frozen { produced } => editable_seed(produced).is_some(),
-                _ => false,
-            },
-            _ => true,
-        }
-    }
-
     /// First selectable item. The exits are always enabled, so the fallback
     /// never fires.
     fn first_enabled(&self) -> usize {
         (0..self
             .offers
             .len())
-            .find(|&i| self.enabled(self.offers[i]))
+            .find(|&i| offerable(&self.field, self.offers[i]))
             .unwrap_or(0)
     }
 
@@ -1575,22 +1820,6 @@ impl Prompt {
             .unwrap_or_else(|| self.first_enabled())
     }
 
-    /// Nearest selectable item after / before `from`, or `None` at the edge —
-    /// so navigation stops rather than wrapping, and steps over a greyed item.
-    fn next_enabled(&self, from: usize) -> Option<usize> {
-        ((from + 1)
-            ..self
-                .offers
-                .len())
-            .find(|&i| self.enabled(self.offers[i]))
-    }
-
-    fn prev_enabled(&self, from: usize) -> Option<usize> {
-        (0..from)
-            .rev()
-            .find(|&i| self.enabled(self.offers[i]))
-    }
-
     /// Transition a `Frozen` scalar into an editable buffer seeded from it.
     /// Reached only via the `Edit` menu item, which is offered only when the
     /// seed exists, so the fallback restore never fires in practice.
@@ -1605,29 +1834,19 @@ impl Prompt {
         self.menu = None;
     }
 
-    fn handle(&mut self, key: KeyEvent) -> Option<UserInput> {
-        if key
-            .modifiers
-            .contains(KeyModifiers::CONTROL)
-        {
-            if let KeyCode::Char('c') = key.code {
-                // Believe it or not we actually have to handle <Ctrl>+<c>
-                // explicitly when in raw mode! It reads as a blunt Quit.
-                return Some(UserInput::Quit);
-            }
-        }
+    fn handle(&mut self, intent: Intent) -> Option<UserInput> {
         if self
             .reason
             .is_some()
         {
-            self.reason_key(key.code)
+            self.reason_key(intent)
         } else if self
             .menu
             .is_some()
         {
-            self.menu_key(key.code)
+            self.menu_key(intent)
         } else {
-            self.field_key(key.code)
+            self.field_key(intent)
         }
     }
 
@@ -1653,53 +1872,35 @@ impl Prompt {
         }
     }
 
-    /// A letter shortcut: rest the highlight on `item`, then activate it.
-    fn choose(&mut self, item: Offer) -> Option<UserInput> {
-        self.menu = self
-            .offers
-            .iter()
-            .position(|m| *m == item);
-        self.activate(item)
-    }
-
-    fn menu_key(&mut self, code: KeyCode) -> Option<UserInput> {
-        let active = (*self
-            .menu
-            .as_ref()?)
-        .min(
-            self.offers
-                .len()
-                .saturating_sub(1),
-        );
-        match code {
-            KeyCode::Left => {
-                if let Some(prev) = self.prev_enabled(active) {
-                    self.menu = Some(prev);
-                }
+    fn menu_key(&mut self, intent: Intent) -> Option<UserInput> {
+        match intent {
+            Intent::Move(motion) => {
+                let field = &self.field;
+                self.menu
+                    .as_mut()?
+                    .step(motion, |item| offerable(field, item));
                 None
             }
-            KeyCode::Right => {
-                if let Some(next) = self.next_enabled(active) {
-                    self.menu = Some(next);
-                }
-                None
+            Intent::Accept => {
+                let item = self
+                    .menu
+                    .as_ref()?
+                    .chosen();
+                self.activate(item)
             }
-            KeyCode::Enter => self.activate(self.offers[active]),
-            KeyCode::Char('s') | KeyCode::Char('S') => self.choose(Offer::Skip),
-            KeyCode::Char('f') | KeyCode::Char('F') => self.choose(Offer::Fail),
-            KeyCode::Char('o') | KeyCode::Char('O')
-                if self
-                    .offers
-                    .contains(&Offer::Override) =>
-            {
-                self.choose(Offer::Override)
+            Intent::Typed(c) => {
+                let field = &self.field;
+                let item = self
+                    .menu
+                    .as_mut()?
+                    .select(c, |item| offerable(field, item))?;
+                self.activate(item)
             }
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.choose(Offer::Quit),
-            KeyCode::Esc => {
+            Intent::Decline => {
                 self.menu = None;
                 None
             }
-            _ => None,
+            Intent::Erase | Intent::End => None,
         }
     }
 
@@ -1707,13 +1908,13 @@ impl Prompt {
     /// `Fail(reason)` (an empty reason is taken as given); `<Esc>` closes the
     /// submenu back to the menu with Fail still highlighted; the rest edit the
     /// inline buffer.
-    fn reason_key(&mut self, code: KeyCode) -> Option<UserInput> {
+    fn reason_key(&mut self, intent: Intent) -> Option<UserInput> {
         let reason = self
             .reason
             .as_mut()?;
-        match code {
-            KeyCode::Enter => Some(UserInput::Fail(std::mem::take(&mut reason.buffer))),
-            KeyCode::Esc => {
+        match intent {
+            Intent::Accept => Some(UserInput::Fail(std::mem::take(&mut reason.buffer))),
+            Intent::Decline => {
                 self.reason = None;
                 None
             }
@@ -1724,15 +1925,15 @@ impl Prompt {
         }
     }
 
-    fn field_key(&mut self, code: KeyCode) -> Option<UserInput> {
-        if let KeyCode::Esc = code {
-            self.menu = Some(self.landing());
+    fn field_key(&mut self, intent: Intent) -> Option<UserInput> {
+        if let Intent::Decline = intent {
+            self.menu = Some(Menu::open(&self.offers, self.landing()));
             return None;
         }
         // Up steps back through what has been recorded, wherever the prompt is
         // and whatever field it holds. Down is its counterpart inside review;
         // at the live prompt there is nothing ahead to move to.
-        if let KeyCode::Up = code {
+        if let Intent::Move(Motion::Up) = intent {
             if self.reviewable {
                 return Some(UserInput::Review);
             }
@@ -1745,8 +1946,8 @@ impl Prompt {
                 edited,
                 original,
                 bracketed,
-            } => match code {
-                KeyCode::Enter => {
+            } => match intent {
+                Intent::Accept => {
                     if *bracketed {
                         // A list field submits its buffer as elements, the
                         // same way a command-line argument is read. A buffer
@@ -1778,12 +1979,12 @@ impl Prompt {
                     None
                 }
             },
-            Field::Frozen { produced } => match code {
+            Field::Frozen { produced } => match intent {
                 // Enter accepts the standing verdict: an ordinary prompt's Done,
                 // but at an overrule the failure (or skip) the body left — so
                 // Enter never silently lifts a failure; only the Override menu
                 // item does.
-                KeyCode::Enter => Some(match standing {
+                Intent::Accept => Some(match standing {
                     Standing::Done => UserInput::Done(std::mem::replace(produced, Value::Unitus)),
                     Standing::Skip => UserInput::Skip,
                     Standing::Fail => UserInput::Fail(String::new()),
@@ -1793,20 +1994,20 @@ impl Prompt {
             // Left/Right only: the choices render horizontally and the `<Esc>`
             // menu beside them navigates the same way, so Up and Down are free
             // to be review throughout.
-            Field::Choose { choices, active } => match code {
-                KeyCode::Left => {
+            Field::Choose { choices, active } => match intent {
+                Intent::Move(Motion::Left) => {
                     if *active > 0 {
                         *active -= 1;
                     }
                     None
                 }
-                KeyCode::Right => {
+                Intent::Move(Motion::Right) => {
                     if *active + 1 < choices.len() {
                         *active += 1;
                     }
                     None
                 }
-                KeyCode::Enter => Some(UserInput::Done(Value::Literali(std::mem::take(
+                Intent::Accept => Some(UserInput::Done(Value::Literali(std::mem::take(
                     &mut choices[*active],
                 )))),
                 _ => None,
@@ -1906,8 +2107,8 @@ fn draw_tail(
 ) -> io::Result<(Option<u16>, u16)> {
     let mut cursor_col: Option<u16> = None;
     let mut end_col: u16 = prefix;
-    match interaction.menu {
-        Some(active) => match &interaction.reason {
+    match &interaction.menu {
+        Some(menu) => match &interaction.reason {
             Some(reason) => {
                 write!(out, "{}{}", REASON_PREFIX, reason.buffer)?;
                 let lead = prefix
@@ -1925,7 +2126,10 @@ fn draw_tail(
                         .chars()
                         .count() as u16;
             }
-            None => render_menu(out, interaction, active)?,
+            None => {
+                let field = &interaction.field;
+                render_menu(out, menu, |item| offerable(field, item))?
+            }
         },
         None => match &interaction.field {
             Field::Edit {
@@ -2066,11 +2270,30 @@ fn render_choices(mut out: &mut dyn Write, choices: &[&str], active: usize) -> i
     Ok(())
 }
 
+/// Whether an offered item is currently selectable. Everything the walker
+/// offered is legal by construction; the one exception is `Edit`, which needs
+/// the produced value to be an editable scalar — a property of the value's
+/// shape that the walker cannot know. Navigation skips a disabled item, the
+/// menu never opens onto one, and its letter does not reach it.
+fn offerable(field: &Field, item: Offer) -> bool {
+    match item {
+        Offer::Edit => match field {
+            Field::Frozen { produced } => editable_seed(produced).is_some(),
+            _ => false,
+        },
+        _ => true,
+    }
+}
+
 /// Render the Esc-menu: the active item in reverse video, a disabled item (a
 /// greyed `Edit`) dimmed, the rest plain. The active item is always enabled, so
 /// reverse and dim never apply to the same item.
-fn render_menu(mut out: &mut dyn Write, interaction: &Prompt, active: usize) -> io::Result<()> {
-    for (i, item) in interaction
+fn render_menu(
+    mut out: &mut dyn Write,
+    menu: &Menu,
+    enabled: impl Fn(Offer) -> bool,
+) -> io::Result<()> {
+    for (i, item) in menu
         .offers
         .iter()
         .enumerate()
@@ -2079,11 +2302,11 @@ fn render_menu(mut out: &mut dyn Write, interaction: &Prompt, active: usize) -> 
             write!(out, "  ")?;
         }
         let label = item.label();
-        if i == active {
+        if i == menu.active {
             queue!(&mut out, SetAttribute(Attribute::Reverse))?;
             write!(out, " {} ", label)?;
             queue!(&mut out, SetAttribute(Attribute::Reset))?;
-        } else if !interaction.enabled(*item) {
+        } else if !enabled(*item) {
             queue!(&mut out, SetAttribute(Attribute::Dim))?;
             write!(out, " {} ", label)?;
             queue!(&mut out, SetAttribute(Attribute::Reset))?;
@@ -2159,14 +2382,14 @@ fn next_boundary(s: &str, i: usize) -> usize {
 /// buffer's content changed (an insertion or deletion) as opposed to a cursor
 /// move or an unhandled key. Callers tracking an `edited` flag set it on a
 /// `true` return; `<Enter>` / `<Esc>` are the caller's, not handled here.
-fn text_key(buffer: &mut String, cursor: &mut usize, code: KeyCode) -> bool {
-    match code {
-        KeyCode::Char(c) => {
+fn text_key(buffer: &mut String, cursor: &mut usize, intent: Intent) -> bool {
+    match intent {
+        Intent::Typed(c) => {
             buffer.insert(*cursor, c);
             *cursor += c.len_utf8();
             true
         }
-        KeyCode::Backspace => {
+        Intent::Erase => {
             if *cursor > 0 {
                 let start = prev_boundary(buffer, *cursor);
                 buffer.replace_range(start..*cursor, "");
@@ -2176,11 +2399,11 @@ fn text_key(buffer: &mut String, cursor: &mut usize, code: KeyCode) -> bool {
                 false
             }
         }
-        KeyCode::Left => {
+        Intent::Move(Motion::Left) => {
             *cursor = prev_boundary(buffer, *cursor);
             false
         }
-        KeyCode::Right => {
+        Intent::Move(Motion::Right) => {
             *cursor = next_boundary(buffer, *cursor);
             false
         }

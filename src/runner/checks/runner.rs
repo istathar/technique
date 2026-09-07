@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use crate::engraving::{
-    Appender, InvokeTarget, Ledger, Record, RunId, Serial, State, Store, Supplied, parse_record,
+    Appender, InvokeTarget, Ledger, Motion, Record, RunId, Serial, State, Store, Supplied,
+    parse_record,
 };
 use crate::language;
 use crate::language::{Identifier, Numeric as LangNumeric};
@@ -11,7 +14,9 @@ use crate::program::{
     SubroutineRef,
 };
 use crate::resolution::resolve;
-use crate::runner::driver::{Automatic, Event, Mock, Offer, Review, Scripted, UserInput};
+use crate::runner::driver::{
+    Automatic, Console, Event, Mock, MockKeyboard, Offer, Review, Scripted, UserInput,
+};
 use crate::runner::evaluator::Environment;
 use crate::runner::library::Library;
 use crate::runner::runner::{
@@ -4109,7 +4114,7 @@ survey :
         Ledger::new(),
         Scripted::reviewing(
             [("/survey:/3".to_string(), UserInput::Review)],
-            [Review::Back, Review::Chose(Offer::Edit)],
+            [Review::Move(Motion::Up), Review::Chose(Offer::Edit)],
         ),
         Library::stub(),
     );
@@ -4291,9 +4296,9 @@ II. Analysis
         Scripted::reviewing(
             [("/survey:/II/1".to_string(), UserInput::Review)],
             [
-                Review::Back,
-                Review::Back,
-                Review::Back,
+                Review::Move(Motion::Up),
+                Review::Move(Motion::Up),
+                Review::Move(Motion::Up),
                 Review::Chose(Offer::Edit),
             ],
         ),
@@ -4360,9 +4365,9 @@ dry_towel(towel) : Towel -> ()
         Scripted::reviewing(
             [("/launder:/2".to_string(), UserInput::Review)],
             [
-                Review::Back,
-                Review::Back,
-                Review::Back,
+                Review::Move(Motion::Up),
+                Review::Move(Motion::Up),
+                Review::Move(Motion::Up),
                 Review::Chose(Offer::Edit),
             ],
         ),
@@ -4421,11 +4426,11 @@ survey :
         Scripted::reviewing(
             [("/survey:/3".to_string(), UserInput::Review)],
             [
-                Review::OutOf,
-                Review::OutOf,
-                Review::Back,
-                Review::Forward,
-                Review::Into,
+                Review::Move(Motion::Left),
+                Review::Move(Motion::Left),
+                Review::Move(Motion::Up),
+                Review::Move(Motion::Down),
+                Review::Move(Motion::Right),
                 Review::Chose(Offer::Edit),
             ],
         ),
@@ -4483,7 +4488,11 @@ survey :
         Ledger::new(),
         Scripted::reviewing(
             [("/survey:/3".to_string(), UserInput::Review)],
-            [Review::OutOf, Review::Forward, Review::Chose(Offer::Edit)],
+            [
+                Review::Move(Motion::Left),
+                Review::Move(Motion::Down),
+                Review::Chose(Offer::Edit),
+            ],
         ),
         Library::stub(),
     );
@@ -4617,7 +4626,11 @@ helper :
         Ledger::new(),
         Scripted::reviewing(
             [("/survey:/3".to_string(), UserInput::Review)],
-            [Review::Back, Review::Prior, Review::Chose(Offer::Edit)],
+            [
+                Review::Move(Motion::Up),
+                Review::Move(Motion::PageUp),
+                Review::Chose(Offer::Edit),
+            ],
         ),
         Library::stub(),
     );
@@ -4642,6 +4655,97 @@ helper :
         revoked,
         vec!["/survey:/1"],
         "Up reached what settled before helper: was entered: {}",
+        trail
+    );
+}
+
+// A run driven the way a person drives it: keystrokes in, records out. Every
+// other review test enters through `Scripted::reviewing` or `Mock`, both of
+// which begin after the keystroke that would have opened review.
+fn struck(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+#[test]
+fn keystrokes_amend_a_recorded_value() {
+    let source = r#"
+% technique v1
+
+survey :
+    1.  Note the reading ~ reading
+    2.  File it
+"#;
+    let document = parsing::parse(Path::new("Test.tq"), source.trim_ascii()).expect("parse");
+    let mut program = translate(&document).expect("translate");
+    resolve(&mut program).expect("resolve");
+
+    let keys = [
+        // The first walk: supply the reading, accept step 1.
+        struck(KeyCode::Char('5')),
+        struck(KeyCode::Enter),
+        // Step 1's binding is what answers it, so the next prompt is step 2's.
+        struck(KeyCode::Enter),
+        // At the scope's close, <Up> steps back into what has settled, opening
+        // review on the last record written — step 2's outcome. Two more reach
+        // step 1's, past step 2's `Begin`.
+        struck(KeyCode::Up),
+        struck(KeyCode::Up),
+        struck(KeyCode::Up),
+        // Nothing is standing at a reviewed position, so the offers have to be
+        // opened before a shortcut can be read: `e` is the fifth key, not the
+        // fourth. Edit withdraws the value and the walk restarts.
+        struck(KeyCode::Esc),
+        struck(KeyCode::Char('e')),
+        // The replay reaches step 1 again and asks, its buffer seeded from what
+        // was withdrawn. Withdrawing a value and giving a different one are the
+        // two halves of the one feature.
+        struck(KeyCode::Backspace),
+        struck(KeyCode::Char('7')),
+        struck(KeyCode::Enter),
+        struck(KeyCode::Enter),
+        struck(KeyCode::Enter),
+    ];
+
+    let mut runner = Runner::new(
+        &program,
+        Appender::memory(),
+        Ledger::new(),
+        Console::with_keys(Vec::new(), MockKeyboard::new(keys)),
+        Library::stub(),
+    );
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("first walk");
+    assert_eq!(conclusion, Conclusion::Restarting);
+
+    // `drive` is private, so do for ourselves what it does: the restart carries
+    // the driver, and so the unspent keystrokes with it.
+    let mut runner = runner.restart();
+    let conclusion = runner
+        .run(Environment::new())
+        .expect("replay");
+    assert_eq!(
+        conclusion,
+        Conclusion::Completed(Outcome::Done(Value::Unitus))
+    );
+
+    let trail = runner
+        .into_appender()
+        .contents()
+        .to_string();
+    assert!(
+        trail.contains("/survey:/1 Revoke"),
+        "the revocation reaches the file before the restart: {}",
+        trail
+    );
+    assert!(
+        trail.contains(r#"Bind ( "7" ~ reading )"#),
+        "the replay records the value the user gave the second time: {}",
+        trail
+    );
+    assert!(
+        trail.contains("/ Finish"),
+        "the amended run walks through to its end: {}",
         trail
     );
 }

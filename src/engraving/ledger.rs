@@ -16,10 +16,8 @@ pub struct Entry {
     /// Results bound to variables coming out of scope.
     pub bound: Vec<Supplied>,
     pub outcome: Option<State>,
-    /// This is set by a `Revoke` naming this entry, to be cleared by the next
-    /// `Begin` at this address. Only the target of a revocation is marked,
-    /// never an ancestor, as this is what stops `walk_invoke` otherwise
-    /// thinking it has to restore the very argument being amended.
+    /// Only the target of a revocation is marked, never an ancestor, which is
+    /// what stops `walk_invoke` restoring the very argument being amended.
     pub revoked: bool,
 }
 
@@ -103,13 +101,15 @@ impl Ledger {
                         );
                     }
                 }
-                if self
+                // The stack pops back past this scope, dropping what it still
+                // held open.
+                if let Some(at) = self
                     .open
-                    .last()
-                    == Some(&record.serial)
+                    .iter()
+                    .position(|s| *s == record.serial)
                 {
                     self.open
-                        .pop();
+                        .truncate(at);
                 }
             }
             State::Revoke => self.revoke(record.serial),
@@ -123,9 +123,8 @@ impl Ledger {
         }
     }
 
-    // Ancestors have their outcome cleared too: a Section short-circuits
-    // before descending, so its empty `Begin` would leave it standing.
-    // Descendants are left alone, the input guard reaching them.
+    // A Section short-circuits before descending, so an ancestor left standing
+    // on its empty `Begin` would be skipped on the replay.
     fn revoke(&mut self, serial: Serial) {
         if let Some(key) = self.key_of(serial) {
             if let Some(entry) = self
@@ -136,9 +135,7 @@ impl Ledger {
                 entry.revoked = true;
             }
         }
-        // Retaining each entry, its serial and its `Begin` is what keeps the
-        // descendants reachable and lets a revoked iteration still be claimed
-        // by the item it recorded.
+        // Descendants are left standing, their entries keeping them reachable.
         let mut at = serial;
         while let Some(parent) = self
             .scopes
@@ -160,13 +157,10 @@ impl Ledger {
         }
     }
 
-    // Re-entering a scope implicitly closes whatever was opened inside it, so
-    // the stack pops back past it. Without this a resume after a mid-step Quit
-    // parents the second walk's records under the step that was in flight.
     fn open_scope(&mut self, record: &Record, supplied: Vec<Supplied>) {
-        // Re-entry keeps what the scope already recorded; only a scope being
-        // opened afresh takes a new entry.
         let standing = self.standing(record.serial, &record.path, &supplied);
+        // Without this, a resume after a mid-step Quit parents the second
+        // walk's records under the step that was in flight.
         if let Some(at) = self
             .open
             .iter()
@@ -175,11 +169,8 @@ impl Ledger {
             self.open
                 .truncate(at);
         }
-        // A serial is allocated per (parent, edge) pair, so its parent is
-        // fixed by its route and re-entering the scope does not move it. The
-        // open stack answers only for a serial being seen for the first time —
-        // which is what lets a scope replayed silently, writing no `Begin` of
-        // its own, still have a stale descendant record beneath it correctly.
+        // A serial is allocated per (parent, edge) pair, so re-entry does not
+        // move it; the open stack answers only for one seen for the first time.
         let parent = match self
             .scopes
             .get(&record.serial)
@@ -347,12 +338,8 @@ impl Ledger {
         found
     }
 
-    /// The serial to enter this position at: the one a prior walk used if it
-    /// reached here, otherwise a fresh number. Lookup-before-allocate is what
-    /// keeps a resumed scope addressing its own recorded descendants.
     /// The serial to record work at this address under: the one it already
-    /// wears while it still stands, a fresh one once revoked, redone work
-    /// being new work.
+    /// wears while it still stands, a fresh one once revoked.
     pub fn serial_for(&self, parent: Serial, path: &str) -> Serial {
         match self.look(parent, path) {
             Some(entry) if !entry.revoked => entry.serial,
