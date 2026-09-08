@@ -2834,7 +2834,7 @@ fn names_read<'i>(op: &Operation<'i>, found: &mut Vec<&'i str>) {
         | Operation::Section { .. }
         | Operation::Number(_, _)
         | Operation::Response(_, _)
-        | Operation::Multiline(_, _, _)
+        | Operation::Verbatim(_, _)
         | Operation::Prose(_, _)
         | Operation::Hole(_)
         | Operation::Unit(_) => {}
