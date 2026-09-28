@@ -459,7 +459,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let path = self
             .path
             .render();
-        let reads = read_values(body, env);
+        let reads = read_values([body.as_ref()], env);
         let slot = self.slot(&path);
         let stance = stance(slot.prior, &reads);
         if let Stance::Restore(a) = stance {
@@ -604,10 +604,14 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let path = self
             .path
             .render();
-        let reads = match title {
-            Some(title) => read_values(title, env),
-            None => Vec::new(),
-        };
+        // The title's executables are hoisted into the body.
+        let reads = read_values(
+            title
+                .iter()
+                .map(Box::as_ref)
+                .chain([body]),
+            env,
+        );
         let slot = self.slot(&path);
         let stance = stance(slot.prior, &reads);
         let flow = match stance {
@@ -2082,11 +2086,16 @@ fn kind_of_scope(op: &Operation) -> Kind {
     }
 }
 
-/// The values a step reads directly, in the order first met. A name not yet
+/// The values a scope reads directly, in the order first met. A name not yet
 /// bound contributes nothing.
-fn read_values(op: &Operation, env: &Environment) -> Vec<Supplied> {
+fn read_values<'a, 'i: 'a>(
+    ops: impl IntoIterator<Item = &'a Operation<'i>>,
+    env: &Environment,
+) -> Vec<Supplied> {
     let mut names = Vec::new();
-    names_read(op, &mut names);
+    for op in ops {
+        names_read(op, &mut names);
+    }
     names
         .into_iter()
         .filter_map(|name| {
