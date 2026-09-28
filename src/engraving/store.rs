@@ -13,9 +13,7 @@ pub struct Store {
     base: PathBuf,
 }
 
-// Cap the number of times the allocator retries when another process has
-// taken the identifier we just computed. The race window is small; a
-// handful of retries is more than enough in practice.
+// Retries when another process takes the identifier just computed.
 const ALLOCATE_RETRIES: usize = 4;
 
 impl Store {
@@ -25,8 +23,7 @@ impl Store {
         Store { base }
     }
 
-    /// Allocate a new run identifier and create its directory. Returns the
-    /// identifier and the path of the new directory.
+    /// Allocate a new run identifier and create its directory.
     pub fn allocate(&self) -> Result<(RunId, PathBuf), StoreError> {
         // Make sure the store root exists before scanning for siblings.
         if let Err(error) = std::fs::create_dir_all(&self.base) {
@@ -200,12 +197,8 @@ impl Store {
     }
 }
 
-// Recover the source document's file path and the libraries that were
-// selected from a Start URI of the form
-//
-// file://{path}?library=a,b
-
-// written by `create` records. The query string parameters are optional.
+// Recover the document path and selected libraries from the Start URI
+// `file://{path}?library=a,b` that `create` records; the query is optional.
 pub(crate) fn parse_run_uri(uri: &str) -> (PathBuf, Vec<String>) {
     let (location, query) = match uri.split_once('?') {
         Some((location, query)) => (location, Some(query)),
@@ -265,16 +258,14 @@ enum Target {
 /// Append-only writer for a PFFTT file. Used by the runner to append a
 /// record for each step boundary and lifecycle event. Carries the
 /// `RunId` so callers can stamp it onto records.
-/// through every layer.
 pub struct Appender {
     target: Target,
     run_id: RunId,
 }
 
 impl Appender {
-    /// Open the PFFTT file for append. The file must already exist (the
-    /// runner writes the opening `Start` record first via `Store::create`).
-    /// A torn last line is cut away, and an unterminated one finished.
+    /// Open an existing PFFTT file for append, cutting away a torn last line
+    /// and finishing an unterminated one.
     pub fn open(path: PathBuf, run_id: RunId) -> Result<Self, StoreError> {
         use std::io::Write;
         let content = std::fs::read_to_string(&path).map_err(|error| StoreError::Io {

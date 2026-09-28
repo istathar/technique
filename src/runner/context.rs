@@ -1,9 +1,6 @@
-//! Host capabilities available to native functions when they execute. For now
-//! the only capability is passing output through to the user: output goes
-//! straight to standard output, or — for tests — into an in-memory buffer. A
-//! future GUI or web frontend would hold its own sink here, with
-//! `native()` staying the terminal default and a separate constructor carrying
-//! the real one.
+//! Host capabilities available to native functions when they execute: output
+//! passed through to the user, on standard output or, for tests, into an
+//! in-memory buffer.
 
 use std::cell::{Cell, RefCell};
 use std::io::{self, Write};
@@ -54,12 +51,8 @@ impl Context {
         }
     }
 
-    /// Pass a slice of bytes through to the user immediately. This is the
-    /// streaming primitive: a function teeing a child process's stdout reads
-    /// it in chunks and writes each chunk here (while separately accumulating
-    /// those bytes for its return value). No intermediate `String` is
-    /// allocated and a chunk split mid-UTF-8 is harmless. The terminal sink
-    /// calls `flush()` so output appears to the user live.
+    /// Pass bytes through to the user immediately; a chunk split mid-UTF-8 is
+    /// harmless.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
         self.put(bytes)?;
         if let Some(last) = bytes.last() {
