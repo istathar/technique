@@ -413,3 +413,28 @@ fn argument_echo_serializes_values() {
         r#"(() ~ name, "it's \"blue\"" ~ colour)"#
     );
 }
+
+#[test]
+fn restored_empty_callee_is_announced_on_resume() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Tidy up <noop>
+    2.  Sign the log
+
+noop :
+    "#
+    .trim_ascii();
+    let driver = Mock::with_answers([Answer::Done(Value::Unitus), Answer::Quit]);
+    let (records, _) = walk(source, Vec::new(), &[], driver);
+    let driver = Mock::with_answers([Answer::Done(Value::Unitus)]);
+    let (_, _, driver) = drive(source, records, &[], driver);
+    let log = driver.log();
+    let entered = log
+        .iter()
+        .position(|entry| entry.starts_with(r#"Enter { path: "/noop:""#))
+        .expect("entry line");
+    assert!(log[entered + 1].contains("noop :"));
+}

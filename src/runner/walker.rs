@@ -876,6 +876,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         bind_supplied(&mut local, &supplied);
         let stance = stance(slot.prior, &supplied);
         if let Stance::Restore(a) = stance {
+            self.announce(subroutine, &lexical, &local);
             return self.restore(&mut local, a, Marker::Close);
         }
         let again = self.open(&slot, &lexical, supplied, stance)?;
