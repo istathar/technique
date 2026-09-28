@@ -748,10 +748,14 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let lexical = render_path(&segments);
         let slot = self.slot(&lexical);
         let reask = self.reasking(slot.serial);
+        // What was prompted stands only while the evaluated arguments do.
+        let current = match slot.prior {
+            Some(a) if !reask && agrees(&a.began, &given) => Some(a),
+            _ => None,
+        };
         // A call declined at an argument prompt stands as declined.
-        if let Some(a) = slot.prior {
-            if !reask
-                && a.standing == engraving::Standing::Closed
+        if let Some(a) = current {
+            if a.standing == engraving::Standing::Closed
                 && a.children
                     .is_empty()
                 && a.began
@@ -762,8 +766,8 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 return self.restore(&mut Environment::new(), a, Marker::Close);
             }
         }
-        let recorded = match slot.prior {
-            Some(a) if !reask && a.standing != engraving::Standing::Withdrawn => Some(&a.began),
+        let recorded = match current {
+            Some(a) if a.standing != engraving::Standing::Withdrawn => Some(&a.began),
             _ => None,
         };
         self.invoke(&caller, InvokeTarget::Procedure(name.to_string()))?;
@@ -1884,6 +1888,16 @@ fn bind_supplied(env: &mut Environment, supplied: &[Supplied]) {
             );
         }
     }
+}
+
+fn agrees(began: &[Supplied], given: &[Option<Value>]) -> bool {
+    given
+        .iter()
+        .zip(began)
+        .all(|(value, item)| match value {
+            Some(value) => *value == item.value,
+            None => true,
+        })
 }
 
 fn is_hole(op: &Operation) -> bool {
