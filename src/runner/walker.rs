@@ -486,10 +486,24 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 .library,
             op,
         );
+        let former = match slot
+            .seed
+            .and_then(|a| {
+                a.outcome
+                    .as_ref()
+                    .or(a
+                        .former_outcome
+                        .as_ref())
+            }) {
+            Some(State::Done(Some(Value::Literali(text)))) if !choices.is_empty() => {
+                Some(text.clone())
+            }
+            _ => None,
+        };
         let rollup = outcome_of(&flow);
         let (outcome, restored) = self.resolve(env, &rollup, |walker| match flow {
             Flow::Completed(Outcome::Done(produced)) if !acquired => {
-                let reply = walker.ask(
+                let reply = walker.ask_from(
                     Marker::Step,
                     &path,
                     Prompt::Confirm {
@@ -499,10 +513,11 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                         choices: &choices,
                     },
                     CONFIRM,
+                    former,
                 )?;
                 Ok(answered(reply, produced))
             }
-            Flow::Completed(Outcome::Fail(_)) => {
+            Flow::Completed(Outcome::Fail(_)) if !acquired => {
                 let reply = walker.ask(
                     Marker::Step,
                     &path,
@@ -535,6 +550,9 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 }
             }
         }
+        if !restored {
+            self.vacate(env, std::slice::from_ref(body), &outcome);
+        }
         self.finish(env, Marker::Step, &path, &outcome, restored)?;
         Ok(Flow::Completed(outcome))
     }
@@ -562,6 +580,9 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 };
                 let rollup = outcome_of(&flow);
                 let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
+                if !restored {
+                    self.vacate(env, ops, &outcome);
+                }
                 self.record(env, &path, &outcome, restored)?;
                 Flow::Completed(outcome)
             }
@@ -583,12 +604,16 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let path = self
             .path
             .render();
+        let reads = match title {
+            Some(title) => read_values(title, env),
+            None => Vec::new(),
+        };
         let slot = self.slot(&path);
-        let stance = stance(slot.prior, &[]);
+        let stance = stance(slot.prior, &reads);
         let flow = match stance {
             Stance::Restore(a) => self.restore(env, a, Marker::Close)?,
             _ => {
-                let again = self.open(&slot, &path, Vec::new(), stance)?;
+                let again = self.open(&slot, &path, reads, stance)?;
                 let heading = match title {
                     Some(title) => match self.value(env, title)? {
                         Ok(Value::Literali(text)) => text,
@@ -693,6 +718,9 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 let flow = self.perform(env, body, again)?;
                 let rollup = outcome_of(&flow);
                 let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
+                if !restored {
+                    self.vacate(env, std::slice::from_ref(body), &outcome);
+                }
                 self.finish(env, Marker::Close, &path, &outcome, restored)?;
                 Flow::Completed(outcome)
             }
@@ -944,8 +972,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 Err(flow) => return Ok(Err(flow)),
             };
             parts.push(match argument {
-                Operation::Variable(id, _) => format!("{} ~ {}", value, id.value),
-                _ => value.to_string(),
+                Operation::Variable(id, _) => {
+                    format!("{} ~ {}", engraving::serialize_value(&value), id.value)
+                }
+                _ => engraving::serialize_value(&value),
             });
         }
         Ok(Ok(format!("({})", parts.join(", "))))
@@ -1226,6 +1256,30 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         }
     }
 
+    // A failed scope binds unit to each name its body would have bound, as a
+    // Skip does.
+    fn vacate(&mut self, env: &mut Environment, ops: &'i [Operation<'i>], outcome: &Outcome) {
+        let Outcome::Fail(_) = outcome else {
+            return;
+        };
+        let mut names = Vec::new();
+        for op in ops {
+            bindings(op, &mut names);
+        }
+        for name in names {
+            if lookup(
+                &self
+                    .top()
+                    .bound,
+                name.value,
+            )
+            .is_none()
+            {
+                self.unbind(env, std::slice::from_ref(name));
+            }
+        }
+    }
+
     fn note(&mut self, env: &Environment, name: &str) {
         let value = match env.lookup(name) {
             Some(value) => value.clone(),
@@ -1245,7 +1299,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
     }
 
     // Walk a scope's body, unless it was begun again only to take a verdict
-    // chosen in review; a Skip then binds as a live one does.
+    // chosen in review; its names are then bound to unit.
     fn perform(
         &mut self,
         env: &mut Environment,
@@ -1253,16 +1307,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         again: bool,
     ) -> Result<Flow, Halt> {
         if again && self.pending() {
-            if let Some(Amendment {
-                change: Change::Skip,
-                ..
-            }) = &self.amendment
-            {
-                let mut names = Vec::new();
-                bindings(body, &mut names);
-                for name in names {
-                    self.unbind(env, std::slice::from_ref(name));
-                }
+            let mut names = Vec::new();
+            bindings(body, &mut names);
+            for name in names {
+                self.unbind(env, std::slice::from_ref(name));
             }
             return Ok(done(Value::Unitus));
         }
@@ -1575,7 +1623,18 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         prompt: Prompt<'_>,
         offers: &[Offer],
     ) -> Result<Reply, Halt> {
-        let mut draft: Option<String> = None;
+        self.ask_from(marker, path, prompt, offers, None)
+    }
+
+    // `draft` is what the question opens on.
+    fn ask_from(
+        &mut self,
+        marker: Marker,
+        path: &str,
+        prompt: Prompt<'_>,
+        offers: &[Offer],
+        mut draft: Option<String>,
+    ) -> Result<Reply, Halt> {
         loop {
             let question = Question {
                 marker,
@@ -1611,7 +1670,11 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                         .runner
                         .review(Some(serial), &self.asked)?
                     {
-                        Reviewed::Leave => draft = typed,
+                        Reviewed::Leave => {
+                            if typed.is_some() {
+                                draft = typed;
+                            }
+                        }
                         Reviewed::Quit => return Err(self.stop()),
                         Reviewed::Amend(amendment) => return Err(Halt::Restart(amendment)),
                     }
@@ -2183,7 +2246,7 @@ fn render_bindings(names: &[&str], env: &Environment) -> String {
     names
         .iter()
         .map(|name| match env.lookup(name) {
-            Some(value) => format!("{} ~ {}", value, name),
+            Some(value) => format!("{} ~ {}", engraving::serialize_value(value), name),
             None => format!(" ~ {}", name),
         })
         .collect::<Vec<_>>()

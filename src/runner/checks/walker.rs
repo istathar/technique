@@ -3,12 +3,13 @@
 
 use std::path::Path;
 
+use crate::engraving::Motion;
 use crate::engraving::{Appender, Record, State, format_record};
 use crate::linking::link;
 use crate::parsing;
 use crate::resolution::resolve;
 use crate::runner::context::Context;
-use crate::runner::driver::{Answer, Driver, Headless, Scripted};
+use crate::runner::driver::{Answer, Driver, Headless, Mock, Offer, Review, Scripted};
 use crate::runner::library::Library;
 use crate::runner::session::{Conclusion, Runner, bind_parameters};
 use crate::runner::walker::Outcome;
@@ -23,6 +24,16 @@ fn walk<D: Driver>(
     arguments: &[&str],
     driver: D,
 ) -> (Vec<Record>, Conclusion) {
+    let (records, conclusion, _) = drive(source, records, arguments, driver);
+    (records, conclusion)
+}
+
+fn drive<D: Driver>(
+    source: &str,
+    records: Vec<Record>,
+    arguments: &[&str],
+    driver: D,
+) -> (Vec<Record>, Conclusion, D) {
     let path = Path::new("Test.tq");
     let document = parsing::parse(path, source).expect("parse");
     let mut program = translate(&document).expect("translate");
@@ -40,7 +51,10 @@ fn walk<D: Driver>(
     let conclusion = runner
         .run(supplied)
         .expect("run");
-    (runner.records, conclusion)
+    let records = runner
+        .records
+        .clone();
+    (records, conclusion, runner.into_driver())
 }
 
 // `serial path state` for each record, as the goldens compare them.
@@ -351,5 +365,51 @@ helper :
             "001 /survey: Fail [ \"reason\" = \"External command exited with status 1\" ]",
             "000 / Finish",
         ]
+    );
+}
+
+#[test]
+fn choice_asked_again_opens_on_its_former_answer() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Are the hatches open? ~ hatches
+            'Open' | 'Closed'
+    2.  Record { hatches } in the log
+    "#
+    .trim_ascii();
+    let driver = Mock::with_answers([
+        Answer::Done(Value::Literali("Closed".to_string())),
+        Answer::Review(None),
+        Answer::Done(Value::Literali("Open".to_string())),
+        Answer::Done(Value::Unitus),
+    ])
+    .reviewing([Review::Move(Motion::Up), Review::Chose(Offer::Edit)]);
+    let (records, _, driver) = drive(source, Vec::new(), &[], driver);
+    let asked: Vec<&String> = driver
+        .log()
+        .iter()
+        .filter(|entry| entry.starts_with("Question") && entry.contains(r#"path: "/survey:/1""#))
+        .collect();
+    assert_eq!(asked.len(), 2);
+    assert!(asked[0].contains("draft: None"));
+    assert!(asked[1].contains(r#"draft: Some("Closed")"#));
+    assert!(lines(&records).contains(&r#"003 /survey:/2 Begin ( "Open" ~ hatches )"#.to_string()));
+}
+
+#[test]
+fn argument_echo_serializes_values() {
+    let mut env = crate::runner::evaluator::Environment::new();
+    env.extend("name".to_string(), Value::Unitus);
+    env.extend(
+        "colour".to_string(),
+        Value::Literali(r#"it's "blue""#.to_string()),
+    );
+    let params = [Some("name".to_string()), Some("colour".to_string())];
+    assert_eq!(
+        super::render_argument_echo(&params, &env),
+        r#"(() ~ name, "it's \"blue\"" ~ colour)"#
     );
 }
