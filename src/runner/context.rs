@@ -5,11 +5,13 @@
 //! `native()` staying the terminal default and a separate constructor carrying
 //! the real one.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{self, Write};
 
 pub struct Context {
     sink: Sink,
+    /// Whether the last byte written left its line unterminated.
+    ragged: Cell<bool>,
 }
 
 /// Which of a child's two output streams a run of bytes came from; `write_run`
@@ -38,6 +40,7 @@ impl Context {
     pub fn native(colour: bool) -> Self {
         Context {
             sink: Sink::Stdout { colour },
+            ragged: Cell::new(false),
         }
     }
 
@@ -47,6 +50,7 @@ impl Context {
     pub fn capture() -> Self {
         Context {
             sink: Sink::Capture(RefCell::new(Vec::new())),
+            ragged: Cell::new(false),
         }
     }
 
@@ -57,6 +61,15 @@ impl Context {
     /// allocated and a chunk split mid-UTF-8 is harmless. The terminal sink
     /// calls `flush()` so output appears to the user live.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        self.put(bytes)?;
+        if let Some(last) = bytes.last() {
+            self.ragged
+                .set(*last != b'\n');
+        }
+        Ok(())
+    }
+
+    fn put(&self, bytes: &[u8]) -> io::Result<()> {
         match &self.sink {
             Sink::Stdout { .. } => {
                 let mut out = io::stdout();
@@ -82,11 +95,24 @@ impl Context {
             Stream::Stdout => false,
         };
         if red {
-            self.write(b"\x1b[31m")?;
+            self.put(b"\x1b[31m")?;
             self.write(run)?;
-            self.write(b"\x1b[0m")
+            self.put(b"\x1b[0m")
         } else {
             self.write(run)
+        }
+    }
+
+    /// Finish a line output left unterminated, so what follows starts at the
+    /// margin.
+    pub fn end_line(&self) -> io::Result<()> {
+        if self
+            .ragged
+            .get()
+        {
+            self.write(b"\n")
+        } else {
+            Ok(())
         }
     }
 

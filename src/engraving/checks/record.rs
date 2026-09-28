@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::engraving::{
-    InvokeTarget, Record, RecordError, RunId, Serial, State, Store, StoreError, Supplied,
+    Appender, InvokeTarget, Record, RecordError, RunId, Serial, State, Store, StoreError, Supplied,
     display_path, fail_reason, format_record, parse_record,
 };
 use crate::value::Value;
@@ -681,6 +681,104 @@ fn open_missing_start_record() {
     match store.open(RunId(1)) {
         Err(StoreError::StartMissing(run_id)) => assert_eq!(run_id, RunId(1)),
         other => panic!("expected StartMissing, got {:?}", other),
+    }
+}
+
+const JOURNAL: &str = "2026-05-14T12:00:00Z 000001 000 / Start file:///somewhere/Test.tq
+2026-05-14T12:00:01Z 000001 001 /test:/1 Done
+";
+
+fn journal(name: &str, content: &str) -> (TempDir, PathBuf) {
+    let dir = TempDir::new(name);
+    let run_dir = dir
+        .path
+        .join("000001");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let pfftt = run_dir.join("Test.pfftt");
+    std::fs::write(&pfftt, content).unwrap();
+    (dir, pfftt)
+}
+
+#[test]
+fn a_torn_last_line_is_ignored_and_cut_before_appending() {
+    let (dir, pfftt) = journal(
+        "torn-last-line",
+        &format!("{}2026-05-14T12:00:02Z 0000", JOURNAL),
+    );
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    let records = store
+        .read(RunId(1))
+        .expect("read");
+    assert_eq!(records.len(), 2);
+
+    let record = Record {
+        recorded: "2026-05-14T12:00:03Z".to_string(),
+        run_id: RunId(1),
+        serial: Serial(2),
+        path: "/test:/2".to_string(),
+        state: State::Done(None),
+    };
+    let mut appender = Appender::open(pfftt.clone(), RunId(1)).expect("open");
+    appender
+        .append(&record)
+        .expect("append");
+    assert_eq!(
+        std::fs::read_to_string(&pfftt).unwrap(),
+        format!("{}{}", JOURNAL, format_record(&record))
+    );
+    let records = store
+        .read(RunId(1))
+        .expect("read");
+    assert_eq!(records.len(), 3);
+}
+
+#[test]
+fn an_unterminated_last_line_that_parses_is_kept_and_finished() {
+    let content = JOURNAL.trim_end();
+    let (dir, pfftt) = journal("unterminated-last-line", content);
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    let records = store
+        .read(RunId(1))
+        .expect("read");
+    assert_eq!(records.len(), 2);
+
+    let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open");
+    assert_eq!(std::fs::read_to_string(&pfftt).unwrap(), JOURNAL);
+}
+
+#[test]
+fn a_malformed_line_names_its_line_number() {
+    let (dir, _) = journal(
+        "malformed-line",
+        &format!("{}\ngarbage\n{}", JOURNAL, JOURNAL),
+    );
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    match store.read(RunId(1)) {
+        Err(StoreError::MalformedRecord { run_id, line, .. }) => {
+            assert_eq!(run_id, RunId(1));
+            assert_eq!(line, 4);
+        }
+        other => panic!("expected MalformedRecord, got {:?}", other),
+    }
+
+    // Opening reads only the Start line.
+    let (dir, _) = journal("malformed-torn", "garbage");
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    match store.open(RunId(1)) {
+        Err(StoreError::MalformedRecord { line, .. }) => assert_eq!(line, 1),
+        other => panic!("expected MalformedRecord, got {:?}", other),
     }
 }
 

@@ -1532,8 +1532,11 @@ pub fn generate_store_error(error: &StoreError, _renderer: &dyn Render) -> (Stri
             format!("I/O error with local state store at {}", path.display()),
             format!("{}", error),
         ),
-        StoreError::MalformedRecord { run_id, .. } => (
-            format!("Malformed record for run '{:06}'", run_id.0),
+        StoreError::MalformedRecord { run_id, line, .. } => (
+            format!(
+                "Malformed record at line {} for run '{:06}'",
+                line, run_id.0
+            ),
             "The PFFTT state file for this run could not be parsed.".to_string(),
         ),
         StoreError::StartMissing(run_id) => (

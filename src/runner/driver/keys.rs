@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 
 use crate::engraving::Motion;
 
@@ -55,6 +55,9 @@ pub trait Keys {
     fn hold(&mut self) -> Option<Self::Held>;
 
     fn read(&mut self) -> Option<KeyEvent>;
+
+    /// Columns the prompt line wraps at.
+    fn width(&self) -> u16;
 
     /// None means interrupted: `<Ctrl>+<c>`, a read error, or no more keys.
     fn next(&mut self) -> Option<Intent> {
@@ -110,6 +113,13 @@ impl Keys for RealKeyboard {
             }
         }
     }
+
+    fn width(&self) -> u16 {
+        size()
+            .map(|(cols, _)| cols)
+            .unwrap_or(80)
+            .max(1)
+    }
 }
 
 /// A queue of keystrokes standing in for the terminal; run dry, it reads as
@@ -138,6 +148,10 @@ impl Keys for MockKeyboard {
     fn read(&mut self) -> Option<KeyEvent> {
         self.keys
             .pop_front()
+    }
+
+    fn width(&self) -> u16 {
+        80
     }
 }
 
