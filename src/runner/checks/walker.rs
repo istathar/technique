@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::engraving::{Appender, Record, format_record};
+use crate::engraving::{Appender, Record, State, format_record};
 use crate::linking::link;
 use crate::parsing;
 use crate::resolution::resolve;
@@ -312,5 +312,37 @@ survey :
             "001 /survey: Skip",
             "000 / Finish",
         ]
+    );
+}
+
+#[test]
+fn continued_throw_is_thrown_again() {
+    let source = r#"
+% technique v1
+
+survey :
+
+    1.  Stamp it <helper>() then { exec("false") }
+
+helper :
+
+    1.  Look at it
+    "#
+    .trim_ascii();
+    let (mut records, _) = walk(source, Vec::new(), &[], Headless::new());
+    let mut revoke = records
+        .iter()
+        .find(|r| r.path == "/helper:/1")
+        .unwrap()
+        .clone();
+    revoke.state = State::Revoke;
+    records.push(revoke);
+    let amended = records.len();
+    let (records, _) = walk(source, records, &[], Headless::new());
+    assert!(
+        lines(&records[amended..]).contains(
+            &"002 /survey:/1 Fail [ \"reason\" = \"External command exited with status 1\" ]"
+                .to_string()
+        )
     );
 }
