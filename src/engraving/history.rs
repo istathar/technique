@@ -188,14 +188,12 @@ impl History {
                         .activations
                         .get_mut(&serial)
                     {
+                        // A gate put again replaces its bare `Return`.
                         if let Some(effect) = activation
                             .effects
                             .last_mut()
                         {
-                            if effect
-                                .returned
-                                .is_none()
-                            {
+                            if let None | Some(None) = effect.returned {
                                 effect.returned = Some(value.clone());
                             }
                         }

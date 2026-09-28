@@ -1,4 +1,5 @@
-Enter                   # [1]/[1] exec
+Enter                   # prologue exec
+Enter                   # /1
 Esc "q"                 # /2
 --- resume
 Enter*2                 # /2 survey:

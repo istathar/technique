@@ -316,7 +316,7 @@ survey :
 }
 
 #[test]
-fn continued_throw_is_thrown_again() {
+fn reopened_bare_return_is_put_again() {
     let source = r#"
 % technique v1
 
@@ -339,10 +339,17 @@ helper :
     records.push(revoke);
     let amended = records.len();
     let (records, _) = walk(source, records, &[], Headless::new());
-    assert!(
-        lines(&records[amended..]).contains(
-            &"002 /survey:/1 Fail [ \"reason\" = \"External command exited with status 1\" ]"
-                .to_string()
-        )
+    assert_eq!(
+        lines(&records[amended..]),
+        vec![
+            "000 / Resume",
+            "004 /helper:/1 Begin ()",
+            "004 /helper:/1 Skip",
+            "003 /helper: Skip",
+            "002 /survey:/1 Return",
+            "002 /survey:/1 Fail [ \"reason\" = \"External command exited with status 1\" ]",
+            "001 /survey: Fail [ \"reason\" = \"External command exited with status 1\" ]",
+            "000 / Finish",
+        ]
     );
 }

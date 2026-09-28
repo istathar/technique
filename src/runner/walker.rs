@@ -63,7 +63,7 @@ impl From<RunnerError> for Halt {
 }
 
 /// What walking one operation yields. `Throwing` is a failed effect on its way
-/// to the nearest scope that catches it.
+/// to the nearest activation, which records it as its outcome.
 enum Flow {
     Completed(Outcome),
     Throwing(String),
@@ -210,10 +210,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         bind_supplied(&mut env, &inputs);
         let stance = stance(slot.prior, &inputs);
         if let Stance::Restore(a) = stance {
-            return match self.restore(&mut env, a, Marker::Close)? {
-                Flow::Completed(outcome) => Ok(outcome),
-                Flow::Throwing(reason) => Ok(Outcome::Fail(reason)),
-            };
+            return Ok(outcome_of(&self.restore(&mut env, a, Marker::Close)?));
         }
         let again = self.open(&slot, &path, inputs, stance)?;
         if name.is_some() {
@@ -555,7 +552,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let slot = self.slot(&path);
         let stance = stance(slot.prior, &[]);
         let flow = match stance {
-            Stance::Restore(a) => unwind(self.restore_quietly(env, a), a),
+            Stance::Restore(a) => self.restore_quietly(env, a),
             _ => {
                 let again = self.open(&slot, &path, Vec::new(), stance)?;
                 let flow = if again && self.pending() {
@@ -566,7 +563,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 let rollup = outcome_of(&flow);
                 let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
                 self.record(env, &path, &outcome, restored)?;
-                rethrow(flow, outcome)
+                Flow::Completed(outcome)
             }
         };
         self.path
@@ -683,7 +680,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let slot = self.slot(&path);
         let stance = stance(slot.prior, &inputs);
         let flow = match stance {
-            Stance::Restore(a) => unwind(self.restore(env, a, Marker::Close)?, a),
+            Stance::Restore(a) => self.restore(env, a, Marker::Close)?,
             _ => {
                 let again = self.open(&slot, &path, inputs, stance)?;
                 let echo = render_iteration_echo(names, env);
@@ -697,7 +694,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 let rollup = outcome_of(&flow);
                 let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
                 self.finish(env, Marker::Close, &path, &outcome, restored)?;
-                rethrow(flow, outcome)
+                Flow::Completed(outcome)
             }
         };
         self.path
@@ -991,38 +988,33 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         scope.effects += 1;
         let serial = scope.serial;
         let prior = scope.prior;
-        // A throw is its activation's last effect, after every child it reached.
-        let last = match prior {
-            Some(a) => {
-                k + 1
-                    == a.effects
-                        .len()
-                    && a.children
-                        .iter()
-                        .all(|c| {
-                            scope
-                                .reached
-                                .contains(c)
-                        })
-            }
-            None => false,
-        };
         let recorded = prior.and_then(|a| {
             a.effects
                 .get(k)
         });
-        // A continued activation reuses the k-th recorded Return.
-        if let Some(effect) = recorded {
-            if let Some(returned) = &effect.returned {
-                self.runner
-                    .driver
-                    .show(Event::Announce(&described));
-                return Ok(match (returned, prior.and_then(thrown)) {
-                    (Some(value), _) => done(value.clone()),
-                    (None, Some(reason)) if last => Flow::Throwing(reason),
-                    (None, _) => Flow::Completed(Outcome::Skip(Value::Unitus)),
-                });
-            }
+        // A continued activation reuses the k-th recorded Return, but a bare
+        // one it may have failed on, last in an unclosed activation, is put
+        // again.
+        let reused = match recorded.map(|effect| &effect.returned) {
+            Some(Some(Some(value))) => Some(done(value.clone())),
+            Some(Some(None)) => match prior {
+                Some(a)
+                    if a.standing != engraving::Standing::Closed
+                        && k + 1
+                            == a.effects
+                                .len() =>
+                {
+                    None
+                }
+                _ => Some(Flow::Completed(Outcome::Skip(Value::Unitus))),
+            },
+            _ => None,
+        };
+        if let Some(flow) = reused {
+            self.runner
+                .driver
+                .show(Event::Announce(&described));
+            return Ok(flow);
         }
         let path = self
             .path
@@ -1755,31 +1747,6 @@ fn stance<'h>(prior: Option<&'h Activation>, inputs: &[Supplied]) -> Stance<'h> 
         return Stance::Restore(a);
     }
     Stance::Continue(a)
-}
-
-fn rethrow(flow: Flow, outcome: Outcome) -> Flow {
-    match (flow, &outcome) {
-        (Flow::Throwing(reason), Outcome::Fail(_)) => Flow::Throwing(reason),
-        _ => Flow::Completed(outcome),
-    }
-}
-
-fn unwind(flow: Flow, a: &Activation) -> Flow {
-    match thrown(a) {
-        Some(reason) => Flow::Throwing(reason),
-        None => flow,
-    }
-}
-
-// A bare `Return` is a skip or a throw; closing Fail on it tells a throw.
-fn thrown(a: &Activation) -> Option<String> {
-    let effect = a
-        .effects
-        .last()?;
-    match (&effect.returned, concluded(a)) {
-        (Some(None), Some((State::Fail(reason), _))) => Some(reason_of(reason)),
-        _ => None,
-    }
 }
 
 fn done(value: Value) -> Flow {
