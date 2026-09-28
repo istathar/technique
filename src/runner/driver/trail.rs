@@ -155,8 +155,13 @@ pub(super) fn render<W: Write>(out: &mut W, renderer: &dyn Render, event: &Event
                 &format!("» {} {}()", display_path(path), function),
             );
         }
-        Event::Depart { path } => {
-            marker_line(out, renderer, &format!("⇒ {}", display_path(path)));
+        Event::Depart { path, echo } => {
+            let line = format!("⇒ {}", display_path(path));
+            if echo.is_empty() {
+                marker_line(out, renderer, &line);
+            } else {
+                marker_line(out, renderer, &format!("{} {}", line, echo));
+            }
         }
         Event::Announce(message) => indented(out, message, 1),
         Event::Restart => marker_line(out, renderer, &"─".repeat(SEPARATOR)),

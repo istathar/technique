@@ -166,9 +166,17 @@ fn effects_and_announcements() {
     );
     assert_eq!(
         drawn(Event::Depart {
-            path: "/probe:/7/<https://example.com/Helper>"
+            path: "/probe:/7/<https://example.com/Helper>",
+            echo: ""
         }),
         "⇒ probe:/7/<https://example.com/Helper>\n"
+    );
+    assert_eq!(
+        drawn(Event::Depart {
+            path: "/probe:/7/<https://example.com/Helper>",
+            echo: "(\"x\" ~ name)"
+        }),
+        "⇒ probe:/7/<https://example.com/Helper> (\"x\" ~ name)\n"
     );
     assert_eq!(drawn(Event::Announce("exec()")), "    exec()\n");
 }

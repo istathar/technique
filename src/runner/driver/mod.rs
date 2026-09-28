@@ -121,6 +121,7 @@ pub enum Event<'a> {
     },
     Depart {
         path: &'a str,
+        echo: &'a str,
     },
     /// A Pure builtin called, or an effect a replay passed.
     Announce(&'a str),
