@@ -132,6 +132,7 @@ impl History {
                         activation
                             .records
                             .push(i);
+                        history.prune(serial);
                     }
                     if let Some(at) = open
                         .iter()
@@ -381,6 +382,37 @@ impl History {
             }
             self.retired
                 .insert(serial, activation);
+        }
+    }
+
+    // A child revoked and not closed again by the time its parent closes was
+    // not reached, and retires as a superseded one does.
+    fn prune(&mut self, serial: Serial) {
+        let Some(activation) = self
+            .activations
+            .get(&serial)
+        else {
+            return;
+        };
+        let stale: Vec<Serial> = activation
+            .children
+            .iter()
+            .copied()
+            .filter(|child| match self.get(*child) {
+                Some(child) => child.revoked && child.standing != Standing::Closed,
+                None => false,
+            })
+            .collect();
+        for child in &stale {
+            self.retire(*child);
+        }
+        if let Some(activation) = self
+            .activations
+            .get_mut(&serial)
+        {
+            activation
+                .children
+                .retain(|child| !stale.contains(child));
         }
     }
 

@@ -463,6 +463,75 @@ fn sibling_iterations_are_slots_of_their_own() {
 }
 
 #[test]
+fn a_revoked_child_left_open_retires_when_its_parent_closes() {
+    let mut records = journal(
+        r#"
+        001 /survey: Begin ()
+        002 /survey:/1 Begin ()
+        003 /survey:/1/[1] Begin ( "a" ~ s )
+        004 /survey:/1/[1]/-1 Begin ( "a" ~ s )
+        004 /survey:/1/[1]/-1 Done ()
+        003 /survey:/1/[1] Done ()
+        005 /survey:/1/[2] Begin ( "b" ~ s )
+        006 /survey:/1/[2]/-1 Begin ( "b" ~ s )
+        006 /survey:/1/[2]/-1 Done ()
+        005 /survey:/1/[2] Done ()
+        002 /survey:/1 Done ()
+        002 /survey:/1 Revoke
+        005 /survey:/1/[2] Revoke
+        002 /survey:/1 Done ()
+        "#,
+    );
+    let open = History::new(&records[..records.len() - 1]);
+    assert_eq!(
+        open.get(Serial(5))
+            .unwrap()
+            .standing,
+        Standing::Reopened
+    );
+
+    let history = History::new(&records);
+    let scope = history
+        .get(Serial(2))
+        .unwrap();
+    assert_eq!(scope.standing, Standing::Closed);
+    assert_eq!(scope.children, vec![Serial(3)]);
+    assert_eq!(history.get(Serial(5)), None);
+    assert_eq!(history.get(Serial(6)), None);
+    assert_eq!(
+        history
+            .retired(Serial(5))
+            .unwrap()
+            .former_outcome,
+        Some(State::Done(Some(Value::Unitus)))
+    );
+    assert_eq!(history.slot(Serial(2), "/[2]", 0), Some(Serial(5)));
+
+    // Reached again, the slot is begun afresh beneath its parent.
+    records.extend(journal(
+        r#"
+        002 /survey:/1 Revoke
+        005 /survey:/1/[2] Begin ( "b" ~ s )
+        "#,
+    ));
+    let history = History::new(&records);
+    assert_eq!(
+        history
+            .get(Serial(2))
+            .unwrap()
+            .children,
+        vec![Serial(3), Serial(5)]
+    );
+    assert_eq!(
+        history
+            .get(Serial(5))
+            .unwrap()
+            .standing,
+        Standing::Open
+    );
+}
+
+#[test]
 fn effects_belong_to_the_activation_they_were_written_in() {
     let history = fold(
         r#"

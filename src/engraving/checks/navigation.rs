@@ -384,6 +384,38 @@ fn a_withdrawn_step_leaves_a_gap_the_cursor_crosses() {
     }
 }
 
+/// An iteration a shrunken list no longer reaches, revoked as its loop closed,
+/// holds no position.
+#[test]
+fn an_unreached_iteration_is_no_position() {
+    let records = journal(
+        r#"
+        000 / Start file://Task.tq
+        001 /task: Begin ()
+        002 /task:/1 Begin ()
+        003 /task:/1/[1] Begin ( "a" ~ s )
+        004 /task:/1/[1]/-1 Begin ( "a" ~ s )
+        004 /task:/1/[1]/-1 Done ()
+        003 /task:/1/[1] Done ()
+        005 /task:/1/[2] Begin ( "b" ~ s )
+        006 /task:/1/[2]/-1 Begin ( "b" ~ s )
+        006 /task:/1/[2]/-1 Done ()
+        005 /task:/1/[2] Done ()
+        002 /task:/1 Done ()
+        002 /task:/1 Revoke
+        005 /task:/1/[2] Revoke
+        002 /task:/1 Done ()
+        001 /task: Done ()
+        000 / Finish
+        "#,
+    );
+    let journal = Journal::new(&records, None);
+
+    assert_eq!(journal.last(), Some(Position::At(15)));
+    walk(&journal, 15, Motion::Up, &[14, 6, 5, 4, 3, 2, 1, 0]);
+    assert_eq!(journal.step(Position::At(3), Motion::PageDown), None);
+}
+
 #[test]
 fn review_opens_on_the_last_thing_the_walk_did_when_the_prompt_is_ahead_of_survivors() {
     let records = journal(
