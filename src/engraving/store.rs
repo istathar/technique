@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::StoreError;
-use super::record::{Record, RunId, Serial, State, format_record, parse_record, parse_records};
+use super::record::{Record, RunId, Serial, State, format_record, parse_record};
 
 /// On-disk store of runs, rooted at some base directory (conventionally
 /// `.store/` relative to the user's current directory).
@@ -108,7 +108,25 @@ impl Store {
             error,
         })?;
 
-        parse_records(&content).map_err(|error| StoreError::MalformedRecord { run_id, error })
+        let kept = match torn(&content) {
+            Some(start) => &content[..start],
+            None => &content,
+        };
+        kept.lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                !line
+                    .trim()
+                    .is_empty()
+            })
+            .map(|(i, line)| {
+                parse_record(line).map_err(|error| StoreError::MalformedRecord {
+                    run_id,
+                    line: i + 1,
+                    error,
+                })
+            })
+            .collect()
     }
 
     /// Open an existing run. Parses the leading `Start` record to recover the
@@ -127,17 +145,20 @@ impl Store {
             error,
         })?;
 
-        let first = content
+        let (i, first) = content
             .lines()
-            .filter(|line| {
+            .enumerate()
+            .find(|(_, line)| {
                 !line
                     .trim()
                     .is_empty()
             })
-            .next()
             .ok_or(StoreError::StartMissing(run_id))?;
-        let head =
-            parse_record(first).map_err(|error| StoreError::MalformedRecord { run_id, error })?;
+        let head = parse_record(first).map_err(|error| StoreError::MalformedRecord {
+            run_id,
+            line: i + 1,
+            error,
+        })?;
         let (document, libraries) = match head.state {
             State::Start { uri, .. } => parse_run_uri(&uri),
             _ => return Err(StoreError::StartMissing(run_id)),
@@ -205,6 +226,21 @@ pub(crate) fn parse_run_uri(uri: &str) -> (PathBuf, Vec<String>) {
     (PathBuf::from(path), libraries)
 }
 
+// Where a last line cut short by a crash mid-write begins: one lacking its
+// newline that does not parse.
+fn torn(content: &str) -> Option<usize> {
+    if content.is_empty() || content.ends_with('\n') {
+        return None;
+    }
+    let start = content
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    match parse_record(&content[start..]) {
+        Ok(_) => None,
+        Err(_) => Some(start),
+    }
+}
+
 // Compute the on-disk PFFTT file path for a run, named using the source
 // document's stem.
 pub(crate) fn construct_state_path(run_dir: &Path, document: &Path) -> PathBuf {
@@ -238,14 +274,30 @@ pub struct Appender {
 impl Appender {
     /// Open the PFFTT file for append. The file must already exist (the
     /// runner writes the opening `Start` record first via `Store::create`).
+    /// A torn last line is cut away, and an unterminated one finished.
     pub fn open(path: PathBuf, run_id: RunId) -> Result<Self, StoreError> {
-        let file = std::fs::OpenOptions::new()
+        use std::io::Write;
+        let content = std::fs::read_to_string(&path).map_err(|error| StoreError::Io {
+            path: path.clone(),
+            error,
+        })?;
+        let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .map_err(|error| StoreError::Io {
                 path: path.clone(),
                 error,
             })?;
+        if !content.is_empty() && !content.ends_with('\n') {
+            match torn(&content) {
+                Some(start) => file.set_len(start as u64),
+                None => file.write_all(b"\n"),
+            }
+            .map_err(|error| StoreError::Io {
+                path: path.clone(),
+                error,
+            })?;
+        }
         Ok(Appender {
             target: Target::File { file, path },
             run_id,

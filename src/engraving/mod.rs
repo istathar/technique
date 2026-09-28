@@ -15,8 +15,15 @@ pub enum StoreError {
     NoSuchRun(RunId),
     StartMissing(RunId),
     InvalidRunId(String),
-    MalformedRecord { run_id: RunId, error: RecordError },
-    Io { path: PathBuf, error: io::Error },
+    MalformedRecord {
+        run_id: RunId,
+        line: usize,
+        error: RecordError,
+    },
+    Io {
+        path: PathBuf,
+        error: io::Error,
+    },
 }
 
 pub use history::{Activation, Effect, History, Standing, edge};
