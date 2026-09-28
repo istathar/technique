@@ -416,6 +416,9 @@ fn exec(context: &Context, env: &Environment, args: &[Value]) -> Result<Value, R
             .write_run(&err_pending, Stream::Stderr)
             .map_err(RunnerError::ExecError)?;
     }
+    context
+        .end_line()
+        .map_err(RunnerError::ExecError)?;
 
     let status = child
         .wait()
