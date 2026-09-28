@@ -10,7 +10,7 @@
 2026-09-28T23:55:29.379Z 000000 004 /survey:/I Begin ( "false" ~ cmd )
 2026-09-28T23:55:29.379Z 000000 004 /survey:/I Execute exec()
 2026-09-28T23:55:29.391Z 000000 004 /survey:/I Return
-2026-09-28T23:55:29.391Z 000000 004 /survey:/I Fail
+2026-09-28T23:55:29.391Z 000000 004 /survey:/I Fail [ "reason" = "External command exited with status 1" ]
 2026-09-28T23:55:29.391Z 000000 005 /survey:/II Begin ()
 2026-09-28T23:55:29.391Z 000000 005 /survey:/II Invoke closing:
 2026-09-28T23:55:29.391Z 000000 006 /survey:/II/closing: Begin ()
