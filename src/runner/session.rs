@@ -277,8 +277,9 @@ fn verdict_at(state: &State) -> Option<Verdict> {
     }
 }
 
-// An outcome can be given again, and redone where it encloses nothing; the
-// `Begin` of a call whose arguments were prompted can have them asked again.
+// An outcome can be given again, and a step's redone where it encloses
+// nothing; the `Begin` of a call whose arguments were prompted can have them
+// asked again.
 fn offers_at(
     record: &Record,
     verdict: Option<&Verdict>,
@@ -287,7 +288,7 @@ fn offers_at(
 ) -> Vec<Offer> {
     let mut offers = Vec::new();
     if let Some(verdict) = verdict {
-        if !encloses {
+        if !encloses && marker_of(record) == Marker::Step {
             offers.push(Offer::Edit);
         }
         offers.push(Offer::Skip);
@@ -317,11 +318,24 @@ fn marker_of(record: &Record) -> Marker {
         State::Done(_) | State::Skip | State::Fail(_) | State::Finish | State::Stop => true,
         _ => false,
     };
-    let edge = record
+    // An external's URI holds slashes of its own.
+    let edge = match record
         .path
-        .rsplit('/')
-        .next()
-        .unwrap_or("");
+        .rfind("/<")
+    {
+        Some(i)
+            if record
+                .path
+                .ends_with('>') =>
+        {
+            &record.path[i + 1..]
+        }
+        _ => record
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(""),
+    };
     if record.path == "/" || (edge.starts_with('<') && edge.ends_with('>')) {
         return if leaving {
             Marker::Return
