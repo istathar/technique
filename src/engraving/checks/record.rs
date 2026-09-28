@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::engraving::{
-    InvokeTarget, Ledger, Record, RecordError, RunId, Serial, State, Store, StoreError, Supplied,
+    InvokeTarget, Record, RecordError, RunId, Serial, State, Store, StoreError, Supplied,
     display_path, fail_reason, format_record, parse_record,
 };
 use crate::value::Value;
@@ -143,17 +143,12 @@ fn create_and_open_round_trips_document_path() {
     let (run_id, _) = store
         .create(&document, started, &[])
         .expect("create");
-    let (read_document, libraries, ledger, _) = store
+    let (read_document, libraries, _) = store
         .open(run_id)
         .expect("open");
 
     assert_eq!(read_document, document);
     assert!(libraries.is_empty());
-    assert!(
-        ledger
-            .look(Serial::LIFECYCLE, "/")
-            .is_none()
-    );
 }
 
 #[test]
@@ -171,112 +166,12 @@ fn create_and_open_round_trips_libraries() {
     let (run_id, _) = store
         .create(&document, started, &selected)
         .expect("create");
-    let (read_document, libraries, _, _) = store
+    let (read_document, libraries, _) = store
         .open(run_id)
         .expect("open");
 
     assert_eq!(read_document, document);
     assert_eq!(libraries, selected);
-}
-
-// One record line, for building a journal a test then writes to disk.
-fn line(serial: u32, path: &str, state: State) -> String {
-    format_record(&Record {
-        recorded: format!("2026-05-14T12:00:{:02}Z", serial),
-        run_id: RunId(1),
-        serial: Serial(serial),
-        path: path.to_string(),
-        state,
-    })
-}
-
-fn trail_of(dir: &TempDir, lines: &[String]) -> Ledger {
-    let run_dir = dir
-        .path
-        .join("000001");
-    std::fs::create_dir_all(&run_dir).unwrap();
-    let mut file = line(
-        0,
-        "/",
-        State::Start {
-            uri: "file:///foo/Test.tq".to_string(),
-        },
-    );
-    for text in lines {
-        file.push_str(text);
-    }
-    std::fs::write(run_dir.join("Test.pfftt"), file).unwrap();
-    let store = Store::new(
-        dir.path
-            .clone(),
-    );
-    let (_, _, ledger, _) = store
-        .open(RunId(1))
-        .expect("open");
-    ledger
-}
-
-#[test]
-fn open_folds_done_skip_and_fail_into_outcomes() {
-    let dir = TempDir::new("replay-three");
-    let ledger = trail_of(
-        &dir,
-        &[
-            line(1, "/test:1", State::Begin(Vec::new())),
-            line(1, "/test:1", State::Done(None)),
-            line(2, "/test:2", State::Begin(Vec::new())),
-            line(2, "/test:2", State::Skip),
-            line(3, "/test:3", State::Begin(Vec::new())),
-            line(3, "/test:3", State::Fail(None)),
-        ],
-    );
-
-    for path in ["/test:1", "/test:2", "/test:3"] {
-        let entry = ledger
-            .look(Serial::LIFECYCLE, path)
-            .expect("entry");
-        assert!(
-            entry
-                .outcome
-                .is_some(),
-            "{} has an outcome",
-            path
-        );
-    }
-}
-
-// A scope the walk entered but never closed is not a completion: the entry
-// stands, holding what it began with, and a resume redoes it.
-#[test]
-fn open_leaves_an_unfinished_scope_without_an_outcome() {
-    let dir = TempDir::new("replay-unfinished");
-    let ledger = trail_of(
-        &dir,
-        &[
-            line(1, "/test:1", State::Begin(Vec::new())),
-            line(1, "/test:1", State::Done(Some(Value::Unitus))),
-            line(2, "/test:2", State::Begin(Vec::new())),
-            line(0, "/", State::Resume),
-        ],
-    );
-
-    let finished = ledger
-        .look(Serial::LIFECYCLE, "/test:1")
-        .expect("entry");
-    assert!(
-        finished
-            .outcome
-            .is_some()
-    );
-
-    let unfinished = ledger
-        .look(Serial::LIFECYCLE, "/test:2")
-        .expect("entry");
-    assert!(
-        unfinished
-            .outcome
-            .is_none()
-    );
 }
 
 #[test]

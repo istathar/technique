@@ -5,7 +5,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::StoreError;
-use super::ledger::Ledger;
 use super::record::{Record, RunId, Serial, State, format_record, parse_record, parse_records};
 
 /// On-disk store of runs, rooted at some base directory (conventionally
@@ -113,12 +112,9 @@ impl Store {
     }
 
     /// Open an existing run. Parses the leading `Start` record to recover the
-    /// source document and the libraries it was run with, then folds every
-    /// record that follows into the `Ledger` a resume walks against.
-    pub fn open(
-        &self,
-        run_id: RunId,
-    ) -> Result<(PathBuf, Vec<String>, Ledger, PathBuf), StoreError> {
+    /// source document and the libraries it was run with, and names the run's
+    /// directory.
+    pub fn open(&self, run_id: RunId) -> Result<(PathBuf, Vec<String>, PathBuf), StoreError> {
         let run_dir = self
             .base
             .join(run_id.render());
@@ -131,15 +127,13 @@ impl Store {
             error,
         })?;
 
-        let mut lines = content
+        let first = content
             .lines()
             .filter(|line| {
                 !line
                     .trim()
                     .is_empty()
-            });
-
-        let first = lines
+            })
             .next()
             .ok_or(StoreError::StartMissing(run_id))?;
         let head =
@@ -148,14 +142,7 @@ impl Store {
             State::Start { uri, .. } => parse_run_uri(&uri),
             _ => return Err(StoreError::StartMissing(run_id)),
         };
-
-        let mut ledger = Ledger::new();
-        for line in lines {
-            let record = parse_record(line)
-                .map_err(|error| StoreError::MalformedRecord { run_id, error })?;
-            ledger.apply(&record);
-        }
-        Ok((document, libraries, ledger, run_dir))
+        Ok((document, libraries, run_dir))
     }
 
     // Scan the store for the highest existing run identifier and return

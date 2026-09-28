@@ -48,6 +48,17 @@ impl<'i> QualifiedPath<'i> {
             .pop()
     }
 
+    /// Whether this very attribute frame is already on the path. A substep
+    /// carries every frame enclosing it, including those its parent pushed.
+    pub fn holds(&self, frame: &[language::Attribute<'i>]) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| match segment {
+                PathSegment::Attributes(held) => std::ptr::eq(*held, frame),
+                _ => false,
+            })
+    }
+
     /// Swap in a fresh set of segments, returning the displaced ones.
     pub fn replace(&mut self, segments: Vec<PathSegment<'i>>) -> Vec<PathSegment<'i>> {
         std::mem::replace(&mut self.segments, segments)
