@@ -40,7 +40,7 @@ fn keys(codes: &[KeyCode]) -> Vec<KeyEvent> {
         .collect()
 }
 
-// Each redraw of the prompt line, escape sequences dropped: a line clear
+// Each redraw of the prompt line, escape sequences dropped: a clear down
 // starts the next frame.
 fn frames(bytes: &[u8]) -> Vec<String> {
     let text = String::from_utf8(bytes.to_vec()).expect("utf8");
@@ -59,7 +59,7 @@ fn frames(bytes: &[u8]) -> Vec<String> {
                 break;
             }
         }
-        if sequence == "[2K" && !frame.is_empty() {
+        if sequence == "[J" && !frame.is_empty() {
             frames.push(std::mem::take(&mut frame));
         }
     }
@@ -317,6 +317,34 @@ fn a_choice_row_moves_and_accepts() {
     let drawn = raw(question(), keys(&[ENTER]));
     assert!(drawn.contains("\x1b[48;5;15m\x1b[38;2;143;89;2m Open "));
     assert!(drawn.contains("\x1b[38;2;245;121;0m Closed "));
+}
+
+#[test]
+fn a_choice_left_for_review_comes_back_highlighted() {
+    let unit = Value::Unitus;
+    let question = |draft| Question {
+        marker: Marker::Step,
+        path: "/probe:/2",
+        prompt: Prompt::Confirm {
+            standing: Standing::Done,
+            kind: Kind::Choice,
+            produced: &unit,
+            choices: &["Open", "Closed"],
+        },
+        offers: &STEP,
+        reviewable: true,
+        draft,
+    };
+    let (answer, _) = put(question(None), keys(&[RIGHT, UP]));
+    assert_eq!(answer, Answer::Review(Some("Closed".to_string())));
+
+    let (answer, _) = put(question(Some("Closed")), keys(&[ENTER]));
+    assert_eq!(answer, Answer::Done(Value::Literali("Closed".to_string())));
+    let drawn = raw(question(Some("Closed")), keys(&[ENTER]));
+    assert!(drawn.contains("\x1b[48;5;15m\x1b[38;2;143;89;2m Closed "));
+
+    let (answer, _) = put(question(Some("Ajar")), keys(&[ENTER]));
+    assert_eq!(answer, Answer::Done(Value::Literali("Open".to_string())));
 }
 
 #[test]
@@ -641,8 +669,42 @@ fn ctrl_c_quits_a_prompt() {
 fn the_prompt_line_is_cleared_once_answered() {
     let unit = Value::Unitus;
     let drawn = raw(confirm(Standing::Done, &unit, &STEP), keys(&[ENTER]));
-    assert!(drawn.ends_with("\x1b[1G\x1b[2K\x1b[?25h"));
+    assert!(drawn.ends_with("\x1b[1G\x1b[J\x1b[?25h"));
     assert!(!drawn.contains('\n'));
+}
+
+#[test]
+fn a_wrapped_line_is_cleared_from_its_first_row() {
+    // 13 columns of prefix and 90 of script wrap onto a second row at 80.
+    let script = "x".repeat(90);
+    let prompt = Prompt::Command { script: &script };
+    let drawn = raw(
+        asked(Marker::Step, "/probe:/6", prompt.clone(), &BOUNDARY),
+        keys(&[KeyCode::Backspace, ENTER]),
+    );
+    let redraw = format!("{}\x1b[?25h\x1b[1A\x1b[1G\x1b[J", script);
+    assert!(drawn.contains(&redraw));
+    assert!(drawn.ends_with("\x1b[1A\x1b[1G\x1b[J\x1b[?25h"));
+
+    // Stepping back across the wrap takes the cursor up to the first row.
+    let drawn = raw(
+        asked(Marker::Step, "/probe:/6", prompt, &BOUNDARY),
+        keys(&[KeyCode::Left; 24]),
+    );
+    assert!(drawn.contains("\x1b[1A\x1b[80G"));
+}
+
+#[test]
+fn a_script_over_several_lines_is_cleared_whole() {
+    let prompt = Prompt::Command {
+        script: "echo one\necho two\n",
+    };
+    let drawn = raw(
+        asked(Marker::Step, "/probe:/6", prompt, &BOUNDARY),
+        keys(&[ENTER]),
+    );
+    assert!(drawn.contains("echo one\r\necho two"));
+    assert!(drawn.ends_with("\x1b[1A\x1b[1G\x1b[J\x1b[?25h"));
 }
 
 // Review.
@@ -673,11 +735,41 @@ fn a_motion_moves_and_leaves_the_line_standing() {
     let (answer, drawn, bytes) = reviewed(frame(Some(&done), "~ colour", &ANSWERED), keys(&[UP]));
     assert_eq!(answer, Review::Move(Motion::Up));
     assert_eq!(drawn, ["→ probe:/3 ~ colour ✓   "]);
-    assert!(!bytes.ends_with("\x1b[2K\x1b[?25h"));
+    assert!(!bytes.ends_with("\x1b[J\x1b[?25h"));
 
     let (answer, drawn, _) = reviewed(frame(None, "", &[Offer::Quit]), keys(&[KeyCode::PageDown]));
     assert_eq!(answer, Review::Move(Motion::PageDown));
     assert_eq!(drawn, ["→ probe:/3    "]);
+
+    // A frame wrapped onto a second row leaves the cursor at its first.
+    let path = format!("/probe:{}", "/1".repeat(40));
+    let wrapped = Frame {
+        path: &path,
+        ..frame(None, "", &[Offer::Quit])
+    };
+    let (_, _, bytes) = reviewed(wrapped, keys(&[UP]));
+    assert!(bytes.ends_with("\x1b[1A"));
+}
+
+#[test]
+fn boundary_frames_draw_their_arrows() {
+    let done = Verdict::Done(Value::Unitus);
+    let path = "/probe:/7/<https://example.com/Helper>";
+    let depart = Frame {
+        marker: Marker::Depart,
+        path,
+        ..frame(None, "", &ANSWERED)
+    };
+    let (_, drawn, _) = reviewed(depart, keys(&[UP]));
+    assert_eq!(drawn, ["⇒ probe:/7/<https://example.com/Helper>    "]);
+
+    let back = Frame {
+        marker: Marker::Return,
+        path,
+        ..frame(Some(&done), "", &ANSWERED)
+    };
+    let (_, drawn, _) = reviewed(back, keys(&[UP]));
+    assert_eq!(drawn, ["⇐ probe:/7/<https://example.com/Helper> ✓   "]);
 }
 
 #[test]
@@ -686,7 +778,7 @@ fn review_enter_does_nothing_until_the_menu_is_open() {
         reviewed(frame(None, "", &[Offer::Quit]), keys(&[ENTER, ESC, ENTER]));
     assert_eq!(answer, Review::Chose(Offer::Quit));
     assert_eq!(drawn[2], "→ probe:/3     Quit ");
-    assert!(bytes.ends_with("\x1b[1G\x1b[2K\x1b[?25h"));
+    assert!(bytes.ends_with("\x1b[1G\x1b[J\x1b[?25h"));
 }
 
 #[test]

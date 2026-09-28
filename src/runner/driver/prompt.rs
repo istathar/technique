@@ -127,12 +127,19 @@ impl Asking {
                 ..
             } => {
                 let field = if !choices.is_empty() {
+                    let active = draft
+                        .and_then(|text| {
+                            choices
+                                .iter()
+                                .position(|c| *c == text)
+                        })
+                        .unwrap_or(0);
                     Field::Choose {
                         choices: choices
                             .iter()
                             .map(|c| c.to_string())
                             .collect(),
-                        active: 0,
+                        active,
                     }
                 } else {
                     match (draft, editable_seed(produced)) {
@@ -208,6 +215,7 @@ impl Asking {
                 edited: true,
                 ..
             } => Some(buffer.clone()),
+            Field::Choose { choices, active } => Some(choices[*active].clone()),
             _ => None,
         }
     }

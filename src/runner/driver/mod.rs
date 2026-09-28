@@ -170,7 +170,8 @@ pub struct Question<'a> {
     pub offers: &'a [Offer],
     /// Whether `<Up>` has anything to review.
     pub reviewable: bool,
-    /// Text the user had typed before leaving for review.
+    /// Text the user had typed, or the choice highlighted, before leaving for
+    /// review.
     pub draft: Option<&'a str>,
 }
 
