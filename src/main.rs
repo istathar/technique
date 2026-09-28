@@ -1168,7 +1168,7 @@ fn main() {
             match runner::resume(run_id, &program, library) {
                 Ok(Conclusion::Stopping) => {
                     eprintln!(
-                        "stopped; continue with `technique resume {}`",
+                        "stopped; resume with `technique resume {}`",
                         run_id.render()
                     );
                     std::process::exit(0);
