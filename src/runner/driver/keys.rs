@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use crossterm::{cursor, execute};
 
 use crate::engraving::Motion;
 
@@ -87,6 +88,7 @@ pub struct Raw;
 
 impl Drop for Raw {
     fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), cursor::Show);
         let _ = disable_raw_mode();
     }
 }
