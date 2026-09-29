@@ -475,6 +475,35 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         } else {
             self.perform(env, body, again)?
         };
+        let rollup = outcome_of(&flow);
+        let (outcome, restored) = self.resolve(env, &rollup, |walker| {
+            walker.confirm(op, &path, flow, slot.seed)
+        })?;
+        if !restored {
+            if chooses {
+                self.choose(env, body, &outcome)?;
+            }
+            self.vacate(env, std::slice::from_ref(body), &outcome);
+        }
+        self.finish(env, Marker::Step, &path, &outcome, restored)?;
+        Ok(Flow::Completed(outcome))
+    }
+
+    // Ask how a step closes, unless its body answered for itself: an
+    // acquire, a declined gate, a failed command.
+    fn confirm(
+        &mut self,
+        op: &'i Operation<'i>,
+        path: &str,
+        flow: Flow,
+        seed: Option<&'h Activation>,
+    ) -> Result<Outcome, Halt> {
+        let Operation::Step {
+            body, responses, ..
+        } = op
+        else {
+            unreachable!() // perform_step passes only Steps
+        };
         let acquired = responses.is_empty() && binds_descriptively(body);
         let choices: Vec<&str> = responses
             .iter()
@@ -486,26 +515,23 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 .library,
             op,
         );
-        let former = match slot
-            .seed
-            .and_then(|a| {
-                a.outcome
-                    .as_ref()
-                    .or(a
-                        .former_outcome
-                        .as_ref())
-            }) {
+        let former = match seed.and_then(|a| {
+            a.outcome
+                .as_ref()
+                .or(a
+                    .former_outcome
+                    .as_ref())
+        }) {
             Some(State::Done(Some(Value::Literali(text)))) if !choices.is_empty() => {
                 Some(text.clone())
             }
             _ => None,
         };
-        let rollup = outcome_of(&flow);
-        let (outcome, restored) = self.resolve(env, &rollup, |walker| match flow {
+        match flow {
             Flow::Completed(Outcome::Done(produced)) if !acquired => {
-                let reply = walker.ask_from(
+                let reply = self.ask_from(
                     Marker::Step,
-                    &path,
+                    path,
                     Prompt::Confirm {
                         standing: Standing::Done,
                         kind,
@@ -518,9 +544,9 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 Ok(answered(reply, produced))
             }
             Flow::Completed(Outcome::Fail(_)) if !acquired => {
-                let reply = walker.ask(
+                let reply = self.ask(
                     Marker::Step,
-                    &path,
+                    path,
                     Prompt::Confirm {
                         standing: Standing::Fail,
                         kind: Kind::Prose,
@@ -531,30 +557,30 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 )?;
                 Ok(answered(reply, Value::Unitus))
             }
-            // The body answered for itself: an acquire, a declined gate, a
-            // failed command.
-            _ => Ok(rollup.clone()),
-        })?;
-        if chooses && !restored {
-            if let Some(names) = binding_names(body) {
-                let chosen = match &outcome {
-                    Outcome::Done(value) => Some(value.clone()),
-                    Outcome::Skip(_) => Some(Value::Unitus),
-                    Outcome::Fail(_) => None,
-                };
-                if let Some(value) = chosen {
-                    evaluator::bind_names(env, names, value)?;
-                    for name in names {
-                        self.note(env, name.value);
-                    }
-                }
-            }
+            other => Ok(outcome_of(&other)),
         }
-        if !restored {
-            self.vacate(env, std::slice::from_ref(body), &outcome);
+    }
+
+    // Bind a choice step's names to what was chosen.
+    fn choose(
+        &mut self,
+        env: &mut Environment,
+        body: &'i Operation<'i>,
+        outcome: &Outcome,
+    ) -> Result<(), Halt> {
+        let Some(names) = binding_names(body) else {
+            return Ok(());
+        };
+        let value = match outcome {
+            Outcome::Done(value) => value.clone(),
+            Outcome::Skip(_) => Value::Unitus,
+            Outcome::Fail(_) => return Ok(()),
+        };
+        evaluator::bind_names(env, names, value)?;
+        for name in names {
+            self.note(env, name.value);
         }
-        self.finish(env, Marker::Step, &path, &outcome, restored)?;
-        Ok(Flow::Completed(outcome))
+        Ok(())
     }
 
     fn walk_prologue(
