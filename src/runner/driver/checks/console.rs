@@ -391,6 +391,24 @@ fn an_acquire_is_typed() {
 }
 
 #[test]
+fn an_empty_acquire_is_refused() {
+    let prompt = Prompt::Acquire {
+        text: "",
+        name: Some("colour"),
+        forma: None,
+        seed: None,
+    };
+    let mut pressed = keys(&[ENTER]);
+    pressed.extend(typed("blue"));
+    pressed.push(key(ENTER));
+    let (answer, _) = put(
+        asked(Marker::Enter, "/probe:/3", prompt, &BOUNDARY),
+        pressed,
+    );
+    assert_eq!(answer, Answer::Done(Value::Literali("blue".to_string())));
+}
+
+#[test]
 fn a_list_acquire_is_bracketed_and_opens_on_its_seed() {
     let seed = Value::Arraeum(vec![
         Value::Literali("a".to_string()),

@@ -322,6 +322,9 @@ impl Asking {
                         // A buffer that does not parse is refused, leaving the edit open.
                         crate::runner::evaluator::parse_list_literal(&format!("[{}]", buffer))
                             .map(|items| Answer::Done(Value::Arraeum(items)))
+                    } else if buffer.is_empty() {
+                        // Text requires a value; declining is Skip or Fail from the menu.
+                        None
                     } else if !*edited {
                         Some(Answer::Done(std::mem::replace(original, Value::Unitus)))
                     } else if let Value::Quanticle(_) = original {
