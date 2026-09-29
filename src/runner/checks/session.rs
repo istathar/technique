@@ -65,7 +65,7 @@ fn finished_run_leaving_review_writes_nothing() {
     assert_eq!(records.len(), finished);
     assert_eq!(
         conclusion,
-        Conclusion::Completed(Outcome::Done(Value::Unitus))
+        Conclusion::Completed(Outcome::Skip(Value::Unitus))
     );
 }
 

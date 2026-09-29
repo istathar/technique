@@ -80,7 +80,7 @@ fn the_other_prompts() {
             forma: None,
             seed: None
         })),
-        Answer::Done(Value::Unitus)
+        Answer::Skip
     );
     assert_eq!(
         unattended(&other(Prompt::Command {

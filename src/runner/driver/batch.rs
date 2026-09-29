@@ -48,9 +48,9 @@ pub fn unattended(question: &Question<'_>) -> Answer {
                 Kind::Prose | Kind::Action | Kind::Choice => Answer::Skip,
             },
         },
-        Prompt::Acquire { .. } | Prompt::Depart { .. } => Answer::Done(Value::Unitus),
+        Prompt::Depart { .. } => Answer::Done(Value::Unitus),
         Prompt::Command { script } => Answer::Done(Value::Literali(script.to_string())),
-        Prompt::Action { .. } | Prompt::External => Answer::Skip,
+        Prompt::Acquire { .. } | Prompt::Action { .. } | Prompt::External => Answer::Skip,
     }
 }
 
