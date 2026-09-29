@@ -49,9 +49,9 @@ pub enum Change {
 /// Why a walk ended before its entry closed.
 #[derive(Debug)]
 pub(super) enum Halt {
-    /// The `Stop` is already written.
+    /// Pending records are dropped and any `Stop` written.
     Stop,
-    /// The `Revoke` is already written.
+    /// The `Revoke` is pending.
     Restart(Amendment),
     Error(RunnerError),
 }
@@ -1633,7 +1633,20 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             Stance::Restore(_) => unreachable!(), // restored slots are not entered
         };
         if prior.is_none() {
-            self.write(slot.serial, path, State::Begin(inputs))?;
+            // Behind a pending record, a Begin the user typed nothing into waits with it.
+            if self
+                .runner
+                .pending
+                > 0
+                && !self
+                    .asked
+                    .contains(&slot.serial)
+            {
+                self.runner
+                    .defer(slot.serial, path, State::Begin(inputs));
+            } else {
+                self.write(slot.serial, path, State::Begin(inputs))?;
+            }
         }
         let mut scope = Scope::new(slot.serial, path, children, self.written);
         scope.prior = prior;
@@ -1706,7 +1719,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
     }
 
     // Put a question, taking the user through review for as long as they are
-    // there. Quit writes `Stop`; an amendment unwinds the walk.
+    // there. Quit stops the session; an amendment unwinds the walk.
     fn ask(
         &mut self,
         marker: Marker,
@@ -1796,9 +1809,12 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
     }
 
     fn stop(&mut self) -> Halt {
-        match self.write(Serial::LIFECYCLE, "/", State::Stop) {
+        match self
+            .runner
+            .stop()
+        {
             Ok(()) => Halt::Stop,
-            Err(halt) => halt,
+            Err(error) => Halt::Error(error),
         }
     }
 

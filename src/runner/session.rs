@@ -33,7 +33,7 @@ pub enum Conclusion {
 pub(super) enum Reviewed {
     Leave,
     Quit,
-    /// The `Revoke` is written.
+    /// The `Revoke` is pending.
     Amend(Amendment),
 }
 
@@ -41,6 +41,9 @@ pub struct Runner<'i, D: Driver> {
     pub(super) program: &'i Program<'i>,
     appender: Appender,
     pub(super) records: Vec<Record>,
+    /// Trailing `records` held back from the file, each whole with its serial and path.
+    pub(super) pending: usize,
+    wrote: bool,
     pub(super) driver: D,
     pub(super) library: Library,
     pub(super) context: Context,
@@ -61,6 +64,8 @@ impl<'i, D: Driver> Runner<'i, D> {
             program,
             appender,
             records,
+            pending: 0,
+            wrote: false,
             driver,
             library,
             context: Context::native(false),
@@ -128,7 +133,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 .roots()
                 .is_empty()
         {
-            self.append(Serial::LIFECYCLE, "/", State::Resume)?;
+            self.defer(Serial::LIFECYCLE, "/", State::Resume);
         }
 
         loop {
@@ -167,13 +172,58 @@ impl<'i, D: Driver> Runner<'i, D> {
         }
     }
 
+    /// Write a record, first writing whatever is pending.
     pub(super) fn append(
         &mut self,
         serial: Serial,
         path: &str,
         state: State,
     ) -> Result<(), RunnerError> {
-        let record = Record {
+        let record = self.record(serial, path, state);
+        let n = self
+            .records
+            .len()
+            - self.pending;
+        for held in &self.records[n..] {
+            self.appender
+                .append(held)?;
+        }
+        self.pending = 0;
+        self.appender
+            .append(&record)?;
+        self.wrote = true;
+        self.records
+            .push(record);
+        Ok(())
+    }
+
+    /// Hold a record back from the file until something real is appended,
+    /// folding it into the journal meanwhile.
+    pub(super) fn defer(&mut self, serial: Serial, path: &str, state: State) {
+        let record = self.record(serial, path, state);
+        self.records
+            .push(record);
+        self.pending += 1;
+    }
+
+    /// Drop what is pending, and write `Stop` only if this session has
+    /// written anything.
+    pub(super) fn stop(&mut self) -> Result<(), RunnerError> {
+        let n = self
+            .records
+            .len()
+            - self.pending;
+        self.records
+            .truncate(n);
+        self.pending = 0;
+        if self.wrote {
+            self.append(Serial::LIFECYCLE, "/", State::Stop)?;
+        }
+        Ok(())
+    }
+
+    fn record(&self, serial: Serial, path: &str, state: State) -> Record {
+        Record {
             recorded: now_iso8601(),
             run_id: self
                 .appender
@@ -181,12 +231,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             serial,
             path: path.to_string(),
             state,
-        };
-        self.appender
-            .append(&record)?;
-        self.records
-            .push(record);
-        Ok(())
+        }
     }
 
     /// Move the review cursor over the journal until the user leaves, quits,
@@ -255,9 +300,9 @@ impl<'i, D: Driver> Runner<'i, D> {
         };
         // Amending a finished run starts a session of its own.
         if prompt.is_none() {
-            self.append(Serial::LIFECYCLE, "/", State::Resume)?;
+            self.defer(Serial::LIFECYCLE, "/", State::Resume);
         }
-        self.append(serial, &path, State::Revoke)?;
+        self.defer(serial, &path, State::Revoke);
         Ok(Reviewed::Amend(Amendment { serial, change }))
     }
 }
