@@ -12,7 +12,7 @@ use super::driver::{
 use super::error::RunnerError;
 use super::evaluator;
 use super::library::{Library, now_iso8601};
-use super::walker::{self, Amendment, Change, Halt, Outcome, reason_of, recorded, verdict_of};
+use super::walker::{self, Amendment, Change, Halt, Outcome, reason_of, verdict_of};
 use crate::engraving::{
     Appender, History, InvokeTarget, Journal, Position, Record, RunId, Serial, State, Store,
     Supplied, construct_state_path,
@@ -121,25 +121,12 @@ impl<'i, D: Driver> Runner<'i, D> {
 
         let history = History::new(&self.records);
         let mut amendment = None;
-        if history.finished() {
-            // No live prompt: review, and write nothing unless amending.
-            match self.review(None, &[])? {
-                Reviewed::Amend(chosen) => amendment = Some(chosen),
-                Reviewed::Leave | Reviewed::Quit => {
-                    let outcome = match history
-                        .roots()
-                        .last()
-                        .and_then(|serial| history.get(*serial))
-                    {
-                        Some(a) => recorded(a),
-                        None => Outcome::Done(Value::Unitus),
-                    };
-                    return Ok(Conclusion::Completed(outcome));
-                }
-            }
-        } else if !history
-            .roots()
-            .is_empty()
+        // A finished run replays its trail, writing nothing, then reviews.
+        let mut replaying = history.finished();
+        if !replaying
+            && !history
+                .roots()
+                .is_empty()
         {
             self.append(Serial::LIFECYCLE, "/", State::Resume)?;
         }
@@ -147,6 +134,17 @@ impl<'i, D: Driver> Runner<'i, D> {
         loop {
             let history = History::new(&self.records);
             match walker::walk(self, &history, amendment.take(), &arguments) {
+                Ok(outcome) if replaying => match self.review(None, &[])? {
+                    Reviewed::Amend(chosen) => {
+                        replaying = false;
+                        amendment = Some(chosen);
+                        self.driver
+                            .show(Event::Restart);
+                    }
+                    Reviewed::Leave | Reviewed::Quit => {
+                        return Ok(Conclusion::Completed(outcome));
+                    }
+                },
                 Ok(outcome) => {
                     self.append(Serial::LIFECYCLE, "/", State::Finish)?;
                     if let Some(label) = &label {

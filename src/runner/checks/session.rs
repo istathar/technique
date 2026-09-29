@@ -70,6 +70,26 @@ fn finished_run_leaving_review_writes_nothing() {
 }
 
 #[test]
+fn finished_run_replays_its_trail_before_review() {
+    let (records, _, _) = session(Vec::new(), Headless::new());
+    let finished = records.len();
+    let (records, _, driver) = session(records, Mock::new());
+    assert_eq!(records.len(), finished);
+    let log = driver.log();
+    let replayed = log
+        .iter()
+        .position(|entry| {
+            entry.contains(r#"path: "/survey:/1""#) && entry.contains("restored: true")
+        })
+        .expect("replayed step");
+    let reviewed = log
+        .iter()
+        .position(|entry| entry.starts_with("Frame"))
+        .expect("review");
+    assert!(replayed < reviewed);
+}
+
+#[test]
 fn amending_a_finished_run_resumes_it() {
     let (records, _, _) = session(Vec::new(), Headless::new());
     let finished = records.len();
