@@ -6,7 +6,6 @@ use crate::language;
 /// of these as it enters each containing scope, pops on exit. Strings
 /// are borrowed from the source via the IR; the renderer materialises
 /// an owned String only on demand.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PathSegment<'i> {
     Section(&'i str),
@@ -24,13 +23,11 @@ pub enum PathSegment<'i> {
 /// `render()` produces the document-rooted form (the tail of the
 /// fully-qualified identifier — URL, file path, and run id are added by
 /// outer layers).
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct QualifiedPath<'i> {
     segments: Vec<PathSegment<'i>>,
 }
 
-#[allow(dead_code)]
 impl<'i> QualifiedPath<'i> {
     pub fn new() -> Self {
         QualifiedPath {

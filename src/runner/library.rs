@@ -483,7 +483,7 @@ fn now(context: &Context, _env: &Environment, _args: &[Value]) -> Result<Value, 
 }
 
 /// A browser-library action: the user performs the UI manipulation when the
-/// runner presents the step, so the call settles to unit.
+/// runner presents the step, so the call yields unit.
 fn interact(_context: &Context, _env: &Environment, _args: &[Value]) -> Result<Value, RunnerError> {
     Ok(Value::Unitus)
 }
