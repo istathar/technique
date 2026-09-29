@@ -973,6 +973,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let caller = self
             .path
             .render();
+        let echo = match self.echo(env, arguments)? {
+            Ok(echo) => echo,
+            Err(flow) => return Ok(flow),
+        };
         self.path
             .push(PathSegment::External(uri));
         let path = self
@@ -985,10 +989,6 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             Stance::Restore(a) => self.restore(env, a, Marker::Return)?,
             _ => {
                 self.open(&slot, &path, Vec::new(), stance)?;
-                let echo = match self.echo(env, arguments)? {
-                    Ok(echo) => echo,
-                    Err(flow) => return Ok(flow),
-                };
                 let (outcome, restored) =
                     self.resolve(env, &Outcome::Done(Value::Unitus), |walker| {
                         match walker.ask(
