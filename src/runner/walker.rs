@@ -1,5 +1,5 @@
 //! One walk of a program from the top against the History of its journal,
-//! appending only what is new. See `plans/rewrite/DESIGN.md` §2.
+//! appending only what is new.
 
 use std::collections::HashMap;
 
@@ -401,7 +401,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 throwing => return Ok(throwing),
             }
         }
-        Ok(Flow::Completed(rollup.settle()))
+        Ok(Flow::Completed(rollup.outcome()))
     }
 
     fn walk_step(
@@ -702,7 +702,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             }
         }
         // A loop yields unit, keeping only its verdict.
-        Ok(Flow::Completed(match rollup.settle() {
+        Ok(Flow::Completed(match rollup.outcome() {
             Outcome::Done(_) => Outcome::Done(Value::Unitus),
             Outcome::Skip(_) => Outcome::Skip(Value::Unitus),
             failed => failed,
@@ -1443,7 +1443,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
     }
 
     // Decide how the innermost scope closes, asking through `ordinary` only
-    // where §2 says the ordinary close logic applies.
+    // where the ordinary close logic applies.
     fn resolve(
         &mut self,
         env: &mut Environment,
@@ -1520,8 +1520,8 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         Ok(())
     }
 
-    // Close the innermost scope, writing its `Bind` and outcome unless its
-    // recorded ones were restored.
+    // Close the innermost scope, writing its outcome unless its recorded one
+    // was restored.
     fn record(
         &mut self,
         env: &mut Environment,
@@ -2143,7 +2143,7 @@ impl Rollup {
         self.value = value;
     }
 
-    fn settle(self) -> Outcome {
+    fn outcome(self) -> Outcome {
         match self
             .rank
             .unwrap_or(Standing::Done)

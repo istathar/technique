@@ -1,5 +1,5 @@
 //! A session: the walk run again from the top after each amendment, with
-//! review modal at a live prompt. See `plans/rewrite/DESIGN.md` §4.
+//! review modal at a live prompt.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};

@@ -57,7 +57,7 @@ pub struct Activation {
     pub records: Vec<usize>,
 }
 
-/// A journal folded. See `plans/rewrite/DESIGN.md` §1 for the rules.
+/// A journal folded.
 #[derive(Debug)]
 pub struct History {
     activations: HashMap<Serial, Activation>,
