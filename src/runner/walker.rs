@@ -761,25 +761,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let caller = self
             .path
             .render();
-        let arguments = &invocable.arguments;
-        let count = if invocable.elided {
-            subroutine.arity()
-        } else {
-            arguments.len()
+        let given = match self.given(env, subroutine, invocable)? {
+            Ok(given) => given,
+            Err(flow) => return Ok(flow),
         };
-        let mut given: Vec<Option<Value>> = Vec::with_capacity(count);
-        for i in 0..count {
-            let prompted = invocable.elided || is_hole(&arguments[i]);
-            if prompted {
-                given.push(None);
-            } else {
-                match self.value(env, &arguments[i])? {
-                    Ok(value) => given.push(Some(value)),
-                    Err(flow) => return Ok(flow),
-                }
-            }
-        }
-
         let segments: Vec<PathSegment<'i>> = subroutine
             .locale
             .iter()
@@ -796,6 +781,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             Some(a) if !reask && agrees(&a.began, &given) => Some(a),
             _ => None,
         };
+        self.invoke(&caller, InvokeTarget::Procedure(name.to_string()))?;
         // A call declined at an argument prompt stands as declined.
         if let Some(a) = current {
             if a.standing == engraving::Standing::Closed
@@ -803,84 +789,19 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     .is_empty()
                 && a.began
                     .len()
-                    < count
+                    < given.len()
             {
-                self.invoke(&caller, InvokeTarget::Procedure(name.to_string()))?;
                 return self.restore(&mut Environment::new(), a, Marker::Close);
             }
         }
         let recorded = match current {
-            Some(a) if a.standing != engraving::Standing::Withdrawn => Some(&a.began),
+            Some(a) if a.standing != engraving::Standing::Withdrawn => Some(&a.began[..]),
             _ => None,
         };
-        self.invoke(&caller, InvokeTarget::Procedure(name.to_string()))?;
-
-        let formae = render_parameter_formae(subroutine.signature);
-        let label = format!("<{}>", name);
-        let mut supplied: Vec<Supplied> = Vec::with_capacity(count);
-        let mut asked = false;
-        for (i, value) in given
-            .into_iter()
-            .enumerate()
-        {
-            let bind = subroutine
-                .parameters
-                .get(i)
-                .cloned()
-                .flatten();
-            let value = match value {
-                Some(value) => value,
-                None => {
-                    asked = true;
-                    match recorded.and_then(|began| began.get(i)) {
-                        Some(item) => item
-                            .value
-                            .clone(),
-                        None => {
-                            let seed = slot
-                                .seed
-                                .and_then(|a| {
-                                    a.began
-                                        .get(i)
-                                })
-                                .map(|item| &item.value);
-                            let forma = formae
-                                .get(i)
-                                .map(|f| f.as_str());
-                            let named = match &bind {
-                                Some(bind) => Some(bind.as_str()),
-                                None => None,
-                            };
-                            match self.acquire(&caller, &label, named, forma, seed)? {
-                                Reply::Done(value) => value,
-                                Reply::Override => Value::Unitus,
-                                Reply::Skip => {
-                                    return self.abandon(
-                                        &slot,
-                                        &lexical,
-                                        supplied,
-                                        Outcome::Skip(Value::Unitus),
-                                    );
-                                }
-                                Reply::Fail(reason) => {
-                                    return self.abandon(
-                                        &slot,
-                                        &lexical,
-                                        supplied,
-                                        Outcome::Fail(reason),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-            supplied.push(Supplied { value, name: bind });
-        }
-        if asked {
-            self.asked
-                .push(slot.serial);
-        }
+        let supplied = match self.supply(subroutine, name, &lexical, &slot, given, recorded)? {
+            Ok(supplied) => supplied,
+            Err(flow) => return Ok(flow),
+        };
 
         // The callee sees only its parameters.
         let mut local = Environment::new();
@@ -902,6 +823,104 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         Ok(Flow::Completed(outcome))
     }
 
+    // An invocation's arguments evaluated, `None` where prompted.
+    fn given(
+        &mut self,
+        env: &mut Environment,
+        subroutine: &'i Subroutine<'i>,
+        invocable: &'i Invocable<'i>,
+    ) -> Result<Result<Vec<Option<Value>>, Flow>, Halt> {
+        if invocable.elided {
+            return Ok(Ok(vec![None; subroutine.arity()]));
+        }
+        let mut given = Vec::new();
+        for argument in &invocable.arguments {
+            if is_hole(argument) {
+                given.push(None);
+                continue;
+            }
+            match self.value(env, argument)? {
+                Ok(value) => given.push(Some(value)),
+                Err(flow) => return Ok(Err(flow)),
+            }
+        }
+        Ok(Ok(given))
+    }
+
+    // Each prompted argument taken from `recorded`, else asked.
+    fn supply(
+        &mut self,
+        subroutine: &'i Subroutine<'i>,
+        name: &str,
+        lexical: &str,
+        slot: &Slot<'h>,
+        given: Vec<Option<Value>>,
+        recorded: Option<&[Supplied]>,
+    ) -> Result<Result<Vec<Supplied>, Flow>, Halt> {
+        let formae = render_parameter_formae(subroutine.signature);
+        let caller = self
+            .path
+            .render();
+        let label = format!("<{}>", name);
+        let mut supplied = Vec::new();
+        let asked = given
+            .iter()
+            .any(Option::is_none);
+        for (i, value) in given
+            .into_iter()
+            .enumerate()
+        {
+            let bind = subroutine
+                .parameters
+                .get(i)
+                .cloned()
+                .flatten();
+            let value = match (value, recorded.and_then(|began| began.get(i))) {
+                (Some(value), _) => value,
+                (None, Some(item)) => item
+                    .value
+                    .clone(),
+                (None, None) => {
+                    let seed = slot
+                        .seed
+                        .and_then(|a| {
+                            a.began
+                                .get(i)
+                        })
+                        .map(|item| &item.value);
+                    let forma = formae
+                        .get(i)
+                        .map(|f| f.as_str());
+                    let named = match &bind {
+                        Some(bind) => Some(bind.as_str()),
+                        None => None,
+                    };
+                    match self.acquire(&caller, &label, named, forma, seed)? {
+                        Reply::Done(value) => value,
+                        Reply::Override => Value::Unitus,
+                        Reply::Skip => {
+                            return self.abandon(
+                                slot,
+                                lexical,
+                                supplied,
+                                Outcome::Skip(Value::Unitus),
+                            );
+                        }
+                        Reply::Fail(reason) => {
+                            return self.abandon(slot, lexical, supplied, Outcome::Fail(reason));
+                        }
+                    }
+                }
+            };
+            supplied.push(Supplied { value, name: bind });
+        }
+        if asked {
+            self.asked
+                .push(slot.serial);
+        }
+        Ok(Ok(supplied))
+    }
+
     // An invocation declined at an argument prompt closes at the callee's path.
     fn abandon(
         &mut self,
@@ -909,10 +928,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         path: &str,
         supplied: Vec<Supplied>,
         outcome: Outcome,
-    ) -> Result<Flow, Halt> {
+    ) -> Result<Result<Vec<Supplied>, Flow>, Halt> {
         self.write(slot.serial, path, State::Begin(supplied))?;
         self.write(slot.serial, path, state_of(&outcome))?;
-        Ok(Flow::Completed(outcome))
+        Ok(Err(Flow::Completed(outcome)))
     }
 
     fn walk_external(
