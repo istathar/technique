@@ -222,8 +222,8 @@ pub(crate) fn parse_run_uri(uri: &str) -> (PathBuf, Vec<String>) {
     (PathBuf::from(path), libraries)
 }
 
-// Where a last line cut short by a crash mid-write begins: one lacking its
-// newline that does not parse.
+// Where a last line cut short mid-write begins: every record is written with
+// its newline, so one lacking it is broken even if it parses.
 fn torn(content: &str) -> Option<usize> {
     if content.is_empty() || content.ends_with('\n') {
         return None;
@@ -231,10 +231,7 @@ fn torn(content: &str) -> Option<usize> {
     let start = content
         .rfind('\n')
         .map_or(0, |i| i + 1);
-    match parse_record(&content[start..]) {
-        Ok(_) => None,
-        Err(_) => Some(start),
-    }
+    Some(start)
 }
 
 // Compute the on-disk PFFTT file path for a run, named using the source
@@ -276,30 +273,25 @@ pub struct Appender {
 }
 
 impl Appender {
-    /// Open an existing PFFTT file for append, cutting away a torn last line
-    /// and finishing an unterminated one.
+    /// Open an existing PFFTT file for append, cutting away a torn last line.
     pub fn open(path: PathBuf, run_id: RunId) -> Result<Self, StoreError> {
-        use std::io::Write;
         let content = std::fs::read_to_string(&path).map_err(|error| StoreError::Io {
             path: path.clone(),
             error,
         })?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .map_err(|error| StoreError::Io {
                 path: path.clone(),
                 error,
             })?;
-        if !content.is_empty() && !content.ends_with('\n') {
-            match torn(&content) {
-                Some(start) => file.set_len(start as u64),
-                None => file.write_all(b"\n"),
-            }
-            .map_err(|error| StoreError::Io {
-                path: path.clone(),
-                error,
-            })?;
+        if let Some(start) = torn(&content) {
+            file.set_len(start as u64)
+                .map_err(|error| StoreError::Io {
+                    path: path.clone(),
+                    error,
+                })?;
         }
         Ok(Appender {
             target: Target::File { file, path },

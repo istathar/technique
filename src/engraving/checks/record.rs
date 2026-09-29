@@ -759,7 +759,7 @@ fn a_torn_last_line_is_ignored_and_cut_before_appending() {
 }
 
 #[test]
-fn an_unterminated_last_line_that_parses_is_kept_and_finished() {
+fn an_unterminated_last_line_is_cut_even_if_it_parses() {
     let content = JOURNAL.trim_end();
     let (dir, pfftt) = journal("unterminated-last-line", content);
     let store = Store::new(
@@ -769,10 +769,16 @@ fn an_unterminated_last_line_that_parses_is_kept_and_finished() {
     let records = store
         .read(RunId(1))
         .expect("read");
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 1);
 
     let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open");
-    assert_eq!(std::fs::read_to_string(&pfftt).unwrap(), JOURNAL);
+    let (head, _) = JOURNAL
+        .split_once('\n')
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&pfftt).unwrap(),
+        format!("{}\n", head)
+    );
 }
 
 #[test]
