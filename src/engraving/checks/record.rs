@@ -115,7 +115,7 @@ fn create_writes_start_record_at_head() {
             .clone(),
     );
     let (run_id, run_dir) = store
-        .create(&document, started, &[])
+        .create(&document, "", started, &[])
         .expect("create");
 
     let pfftt = run_dir.join("NetworkProbe.pfftt");
@@ -130,6 +130,27 @@ fn create_writes_start_record_at_head() {
 }
 
 #[test]
+fn create_copies_source_document_into_run() {
+    let dir = TempDir::new("create-copy");
+
+    let document = PathBuf::from("/somewhere/NetworkProbe.tq");
+    let source = "% technique v1\n\nprobe :\n\n1. Ping the host\n";
+    let started = "2026-05-14T12:34:56Z".to_string();
+
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    let (_, run_dir) = store
+        .create(&document, source, started, &[])
+        .expect("create");
+
+    let copy = run_dir.join("NetworkProbe.tq");
+    let on_disk = std::fs::read_to_string(&copy).expect("read copy");
+    assert_eq!(on_disk, source);
+}
+
+#[test]
 fn create_and_open_round_trips_document_path() {
     let dir = TempDir::new("create-open-roundtrip");
 
@@ -141,7 +162,7 @@ fn create_and_open_round_trips_document_path() {
             .clone(),
     );
     let (run_id, _) = store
-        .create(&document, started, &[])
+        .create(&document, "", started, &[])
         .expect("create");
     let (read_document, libraries, _) = store
         .open(run_id)
@@ -164,7 +185,7 @@ fn create_and_open_round_trips_libraries() {
             .clone(),
     );
     let (run_id, _) = store
-        .create(&document, started, &selected)
+        .create(&document, "", started, &selected)
         .expect("create");
     let (read_document, libraries, _) = store
         .open(run_id)

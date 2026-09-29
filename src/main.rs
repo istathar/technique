@@ -1038,7 +1038,7 @@ fn main() {
             }
 
             match runner::start(
-                mode, colour, filename, &program, &arguments, library, &names,
+                mode, colour, filename, &content, &program, &arguments, library, &names,
             ) {
                 Ok((run_id, Conclusion::Stopping)) => {
                     eprintln!(

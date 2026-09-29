@@ -15,7 +15,7 @@ use super::library::{Library, now_iso8601};
 use super::walker::{self, Amendment, Change, Halt, Outcome, reason_of, verdict_of};
 use crate::engraving::{
     Appender, History, InvokeTarget, Journal, Position, Record, RunId, Serial, State, Store,
-    Supplied, construct_state_path,
+    Supplied, construct_source_path, construct_state_path,
 };
 use crate::program::Program;
 use crate::value::Value;
@@ -375,6 +375,7 @@ pub fn start<'i>(
     mode: Mode,
     colour: bool,
     document: &Path,
+    source: &str,
     program: &'i Program<'i>,
     arguments: &[String],
     library: Library,
@@ -387,7 +388,7 @@ pub fn start<'i>(
         }
     }
     let store = Store::new(PathBuf::from(STORE_ROOT));
-    let (run_id, run_dir) = store.create(document, now_iso8601(), libraries)?;
+    let (run_id, run_dir) = store.create(document, source, now_iso8601(), libraries)?;
     let records = store.read(run_id)?;
     let appender = Appender::open(construct_state_path(&run_dir, document), run_id)?;
     let label = document_label(document);
@@ -463,11 +464,12 @@ pub fn inspect<'i>(
     }
 }
 
-/// The source document and libraries an existing run was started with.
+/// The copy of the source document kept in an existing run's directory, and
+/// the libraries the run was started with.
 pub fn locate(run_id: RunId) -> Result<(PathBuf, Vec<String>), RunnerError> {
     let store = Store::new(PathBuf::from(STORE_ROOT));
-    let (document, libraries, _) = store.open(run_id)?;
-    Ok((document, libraries))
+    let (document, libraries, run_dir) = store.open(run_id)?;
+    Ok((construct_source_path(&run_dir, &document), libraries))
 }
 
 /// An existing run's journal.

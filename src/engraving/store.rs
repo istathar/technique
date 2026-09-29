@@ -58,12 +58,13 @@ impl Store {
         })
     }
 
-    /// Allocate a new run and write its opening `Start` record. The PFFTT
-    /// file is named after the source document's basename (e.g.
-    /// `NetworkProbe.pfftt`).
+    /// Allocate a new run, copy the source document into it, and write its
+    /// opening `Start` record. The PFFTT file is named after the source
+    /// document's basename (e.g. `NetworkProbe.pfftt`).
     pub fn create(
         &self,
         document: &Path,
+        source: &str,
         started: String,
         libraries: &[String],
     ) -> Result<(RunId, PathBuf), StoreError> {
@@ -72,6 +73,8 @@ impl Store {
             error,
         })?;
         let (run_id, run_dir) = self.allocate()?;
+        let copy = construct_source_path(&run_dir, &absolute);
+        std::fs::write(&copy, source).map_err(|error| StoreError::Io { path: copy, error })?;
         let pfftt = construct_state_path(&run_dir, &absolute);
         let mut uri = format!("file://{}", absolute.display());
         if !libraries.is_empty() {
@@ -243,6 +246,15 @@ pub(crate) fn construct_state_path(run_dir: &Path, document: &Path) -> PathBuf {
         .unwrap_or_default();
     let mut name = PathBuf::from(stem);
     name.set_extension("pfftt");
+    run_dir.join(name)
+}
+
+// Compute the path of the copy of the source document kept in a run's
+// directory, named with the source document's basename.
+pub(crate) fn construct_source_path(run_dir: &Path, document: &Path) -> PathBuf {
+    let name = document
+        .file_name()
+        .unwrap_or_default();
     run_dir.join(name)
 }
 
