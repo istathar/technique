@@ -5,8 +5,6 @@ use std::io;
 use crate::engraving::StoreError;
 
 /// Anything that can go wrong while preparing or running a Technique.
-/// Variants are populated as the implementing steps land; the formatter
-/// in `crate::problem` knows how to render each one.
 #[derive(Debug)]
 pub enum RunnerError {
     Store(StoreError),
@@ -54,7 +52,6 @@ pub enum RunnerError {
         text: String,
     },
     TerminalRequired,
-    UserQuit,
 }
 
 impl From<StoreError> for RunnerError {

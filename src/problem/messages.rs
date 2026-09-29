@@ -1745,14 +1745,5 @@ safely redirect the output.
             .trim_ascii()
             .to_string(),
         ),
-        RunnerError::UserQuit => (
-            "Interrupted".to_string(),
-            r#"
-The user quit before the procedure was completed. Use `technique resume
-<id>` to continue.
-            "#
-            .trim_ascii()
-            .to_string(),
-        ),
     }
 }
