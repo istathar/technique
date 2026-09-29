@@ -721,7 +721,18 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     });
                 let flow = self.perform(env, body, again)?;
                 let rollup = outcome_of(&flow);
-                let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
+                // Asks only when its standing departs from a former verdict.
+                let former = self
+                    .top()
+                    .prior
+                    .and_then(concluded)
+                    .map(|(state, _)| rank_of_state(state));
+                let (outcome, restored) = self.resolve(env, &rollup, |walker| match former {
+                    Some(standing) if standing != rank(&rollup) => {
+                        walker.close(&path, &flow, kind_of_scope(body))
+                    }
+                    _ => Ok(rollup.clone()),
+                })?;
                 if !restored {
                     self.vacate(env, std::slice::from_ref(body), &outcome);
                 }
@@ -1331,33 +1342,36 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         kind: Kind,
     ) -> Result<Outcome, Halt> {
         let rollup = outcome_of(&flow);
-        let (outcome, restored) = self.resolve(env, &rollup, |walker| {
-            let (standing, produced, offers) = match &rollup {
-                Outcome::Fail(_) => (Standing::Fail, Value::Unitus, OVERRULE),
-                Outcome::Skip(_) => (Standing::Skip, Value::Unitus, CONFIRM),
-                Outcome::Done(value) => (Standing::Done, value.clone(), CONFIRM),
-            };
-            let reply = walker.ask(
-                Marker::Close,
-                path,
-                Prompt::Confirm {
-                    standing,
-                    kind,
-                    produced: &produced,
-                    choices: &[],
-                },
-                offers,
-            )?;
-            // Accepting a thrown failure keeps the effect's reason.
-            Ok(match (answered(reply, produced), &flow) {
-                (Outcome::Fail(given), Flow::Throwing(reason)) if given.is_empty() => {
-                    Outcome::Fail(reason.clone())
-                }
-                (outcome, _) => outcome,
-            })
-        })?;
+        let (outcome, restored) =
+            self.resolve(env, &rollup, |walker| walker.close(path, &flow, kind))?;
         self.finish(env, Marker::Close, path, &outcome, restored)?;
         Ok(outcome)
+    }
+
+    fn close(&mut self, path: &str, flow: &Flow, kind: Kind) -> Result<Outcome, Halt> {
+        let (standing, produced, offers) = match outcome_of(flow) {
+            Outcome::Fail(_) => (Standing::Fail, Value::Unitus, OVERRULE),
+            Outcome::Skip(_) => (Standing::Skip, Value::Unitus, CONFIRM),
+            Outcome::Done(value) => (Standing::Done, value, CONFIRM),
+        };
+        let reply = self.ask(
+            Marker::Close,
+            path,
+            Prompt::Confirm {
+                standing,
+                kind,
+                produced: &produced,
+                choices: &[],
+            },
+            offers,
+        )?;
+        // Accepting a thrown failure keeps the effect's reason.
+        Ok(match (answered(reply, produced), flow) {
+            (Outcome::Fail(given), Flow::Throwing(reason)) if given.is_empty() => {
+                Outcome::Fail(reason.clone())
+            }
+            (outcome, _) => outcome,
+        })
     }
 
     // Decide how the innermost scope closes, asking through `ordinary` only
