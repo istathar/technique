@@ -3,4 +3,5 @@ Esc "s"                 # /1/a
 Esc "q"                 # /1/b
 --- resume
 Esc "s"                 # /1/b
-Enter*2                 # /2 survey:, /1 closes as skipped unasked
+Esc "s"                 # /1 close, asked again as its reading of () is a Done value
+Enter*2                 # /2 survey:

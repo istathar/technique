@@ -1258,11 +1258,6 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let mut acquired = Vec::with_capacity(names.len());
         for name in names {
             let value = match prior.and_then(|a| lookup(&a.bound, name.value)) {
-                // An acquire bound to unit was skipped.
-                Some(Value::Unitus) => {
-                    self.unbind(env, names)?;
-                    return Ok(Flow::Completed(Outcome::Skip(Value::Unitus)));
-                }
                 Some(value) => value.clone(),
                 None => {
                     let seed = seed.and_then(|a| lookup(kept(a), name.value));
