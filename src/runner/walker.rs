@@ -732,7 +732,14 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             .path
             .render();
         let inputs = iteration_values(names, env);
-        let slot = self.slot(&path);
+        let mut slot = self.slot(&path);
+        // Former values seed only an iteration over the same item.
+        if slot
+            .seed
+            .is_some_and(|a| a.began != inputs)
+        {
+            slot.seed = None;
+        }
         let stance = stance(slot.prior, &inputs);
         let flow = match stance {
             Stance::Restore(a) => self.restore(env, a, Marker::Close)?,
@@ -1573,11 +1580,19 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     .contains(s)
             })
             .and_then(|s| history.get(s));
-        let seed = found.and_then(|s| {
-            history
-                .get(s)
-                .or_else(|| history.retired(s))
-        });
+        // Nothing beneath an unseeded scope is seeded.
+        let seed = found
+            .filter(|_| {
+                scope
+                    .seed
+                    .is_some()
+                    || scope.serial == Serial::LIFECYCLE
+            })
+            .and_then(|s| {
+                history
+                    .get(s)
+                    .or_else(|| history.retired(s))
+            });
         Slot {
             serial,
             prior,
