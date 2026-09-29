@@ -70,7 +70,7 @@ fn fresh_walk_folds_into_the_tree_it_took() {
     assert_eq!(first.bound, vec![named("42", "reading")]);
     assert_eq!(first.outcome, done("42"));
     assert_eq!(first.begun_at, 2);
-    assert_eq!(first.bound_at, Some(3));
+    assert_eq!(first.bound_at, vec![3]);
     assert_eq!(first.closed_at, Some(4));
     assert_eq!(first.records, vec![2, 3, 4]);
 
@@ -596,6 +596,34 @@ fn effects_belong_to_the_activation_they_were_written_in() {
             .unwrap()
             .effects,
         Vec::new()
+    );
+}
+
+#[test]
+fn binds_accumulate_until_begun_again() {
+    let text = r#"
+        000 / Start file://Survey.tq
+        001 /survey: Begin ()
+        002 /survey:/1 Begin ()
+        002 /survey:/1 Bind ( "4" ~ a )
+        002 /survey:/1 Bind ( "5" ~ b )
+        002 /survey:/1 Bind ( "6" ~ a )
+        "#;
+    let history = fold(text);
+    let first = history
+        .get(Serial(2))
+        .unwrap();
+    assert_eq!(first.bound, vec![named("5", "b"), named("6", "a")]);
+    assert_eq!(first.standing, Standing::Open);
+
+    let history = fold(&format!("{}\n002 /survey:/1 Begin ()", text));
+    let first = history
+        .get(Serial(2))
+        .unwrap();
+    assert!(
+        first
+            .bound
+            .is_empty()
     );
 }
 

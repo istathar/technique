@@ -49,9 +49,9 @@ pub struct Activation {
     pub former_outcome: Option<State>,
     /// Whether a `Revoke` named this activation, not only something beneath it.
     pub revoked: bool,
-    /// Indices into the journal of its `Begin`, `Bind` and outcome.
+    /// Indices into the journal of its `Begin`, `Bind`s and outcome.
     pub begun_at: usize,
-    pub bound_at: Option<usize>,
+    pub bound_at: Vec<usize>,
     pub closed_at: Option<usize>,
     /// Every record that stands for it, in journal order.
     pub records: Vec<usize>,
@@ -146,13 +146,17 @@ impl History {
                         .activations
                         .get_mut(&serial)
                     {
-                        if let Some(prior) = activation.bound_at {
+                        for item in bound {
                             activation
-                                .records
-                                .retain(|k| *k != prior);
+                                .bound
+                                .retain(|b| b.name != item.name);
+                            activation
+                                .bound
+                                .push(item.clone());
                         }
-                        activation.bound = bound.clone();
-                        activation.bound_at = Some(i);
+                        activation
+                            .bound_at
+                            .push(i);
                         activation
                             .records
                             .push(i);
@@ -312,7 +316,7 @@ impl History {
                     former_outcome: None,
                     revoked: false,
                     begun_at: i,
-                    bound_at: None,
+                    bound_at: Vec::new(),
                     closed_at: None,
                     records: vec![i],
                 },
@@ -362,7 +366,7 @@ impl History {
                     former_outcome,
                     revoked: false,
                     begun_at: i,
-                    bound_at: None,
+                    bound_at: Vec::new(),
                     closed_at: None,
                     records: vec![i],
                 },
@@ -445,6 +449,14 @@ impl History {
             .children
             .is_empty()
         {
+            // Only one enclosing nothing loses its values.
+            activation
+                .bound
+                .clear();
+            let bound = std::mem::take(&mut activation.bound_at);
+            activation
+                .records
+                .retain(|k| !bound.contains(k));
             Standing::Withdrawn
         } else {
             Standing::Reopened
@@ -486,14 +498,16 @@ fn withdraw(activation: &mut Activation) {
         activation.former_outcome = activation
             .outcome
             .take();
-        activation.former_bound = std::mem::take(&mut activation.bound);
+        activation.former_bound = activation
+            .bound
+            .clone();
     }
-    let (bound, closed) = (activation.bound_at, activation.closed_at);
+    let closed = activation
+        .closed_at
+        .take();
     activation
         .records
-        .retain(|k| Some(*k) != bound && Some(*k) != closed);
-    activation.bound_at = None;
-    activation.closed_at = None;
+        .retain(|k| Some(*k) != closed);
 }
 
 /// A path relative to its parent's: the suffix when the parent's path is a

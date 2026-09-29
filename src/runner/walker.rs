@@ -483,7 +483,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             if chooses {
                 self.choose(env, body, &outcome)?;
             }
-            self.vacate(env, std::slice::from_ref(body), &outcome);
+            self.vacate(env, std::slice::from_ref(body), &outcome)?;
         }
         self.finish(env, Marker::Step, &path, &outcome, restored)?;
         Ok(Flow::Completed(outcome))
@@ -577,10 +577,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             Outcome::Fail(_) => return Ok(()),
         };
         evaluator::bind_names(env, names, value)?;
-        for name in names {
-            self.note(env, name.value);
-        }
-        Ok(())
+        self.note(env, names)
     }
 
     fn walk_prologue(
@@ -607,7 +604,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 let rollup = outcome_of(&flow);
                 let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
                 if !restored {
-                    self.vacate(env, ops, &outcome);
+                    self.vacate(env, ops, &outcome)?;
                 }
                 self.record(env, &path, &outcome, restored)?;
                 Flow::Completed(outcome)
@@ -767,7 +764,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     _ => Ok(rollup.clone()),
                 })?;
                 if !restored {
-                    self.vacate(env, std::slice::from_ref(body), &outcome);
+                    self.vacate(env, std::slice::from_ref(body), &outcome)?;
                 }
                 self.finish(env, Marker::Close, &path, &outcome, restored)?;
                 Flow::Completed(outcome)
@@ -1238,13 +1235,11 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             return match self.walk(env, value)? {
                 Flow::Completed(Outcome::Done(value)) => {
                     evaluator::bind_names(env, names, value)?;
-                    for name in names {
-                        self.note(env, name.value);
-                    }
+                    self.note(env, names)?;
                     Ok(done(Value::Unitus))
                 }
                 Flow::Completed(Outcome::Skip(_)) => {
-                    self.unbind(env, names);
+                    self.unbind(env, names)?;
                     Ok(Flow::Completed(Outcome::Skip(Value::Unitus)))
                 }
                 other => Ok(other),
@@ -1262,10 +1257,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         let seed = scope.seed;
         let mut acquired = Vec::with_capacity(names.len());
         for name in names {
-            let value = match prior
-                .and_then(concluded)
-                .and_then(|(_, bound)| lookup(bound, name.value))
-            {
+            let value = match prior.and_then(|a| lookup(&a.bound, name.value)) {
                 Some(value) => value.clone(),
                 None => {
                     let seed = seed.and_then(|a| lookup(kept(a), name.value));
@@ -1277,7 +1269,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                         Reply::Done(value) => value,
                         Reply::Override => Value::Unitus,
                         Reply::Skip => {
-                            self.unbind(env, names);
+                            self.unbind(env, names)?;
                             return Ok(Flow::Completed(Outcome::Skip(Value::Unitus)));
                         }
                         Reply::Fail(reason) => return Ok(Flow::Completed(Outcome::Fail(reason))),
@@ -1295,63 +1287,92 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     .to_string(),
                 value,
             );
-            self.note(env, name.value);
         }
+        self.note(env, names)?;
         Ok(done(Value::Unitus))
     }
 
     // A skipped binding binds each name to unit, and records that it did.
-    fn unbind(&mut self, env: &mut Environment, names: &[language::Identifier<'_>]) {
+    fn unbind(
+        &mut self,
+        env: &mut Environment,
+        names: &[language::Identifier<'_>],
+    ) -> Result<(), Halt> {
         for name in names {
             env.extend(
                 name.value
                     .to_string(),
                 Value::Unitus,
             );
-            self.note(env, name.value);
         }
+        self.note(env, names)
     }
 
     // A failed scope binds unit to each name its body would have bound, as a
     // Skip does.
-    fn vacate(&mut self, env: &mut Environment, ops: &'i [Operation<'i>], outcome: &Outcome) {
+    fn vacate(
+        &mut self,
+        env: &mut Environment,
+        ops: &'i [Operation<'i>],
+        outcome: &Outcome,
+    ) -> Result<(), Halt> {
         let Outcome::Fail(_) = outcome else {
-            return;
+            return Ok(());
         };
         let mut names = Vec::new();
         for op in ops {
             bindings(op, &mut names);
         }
-        for name in names {
-            if lookup(
-                &self
-                    .top()
-                    .bound,
-                name.value,
-            )
-            .is_none()
-            {
-                self.unbind(env, std::slice::from_ref(name));
-            }
-        }
-    }
-
-    fn note(&mut self, env: &Environment, name: &str) {
-        let value = match env.lookup(name) {
-            Some(value) => value.clone(),
-            None => Value::Unitus,
-        };
-        let bound = &mut self
+        let bound = &self
             .top()
             .bound;
-        bound.retain(|item| match &item.name {
-            Some(bound) => bound != name,
-            None => true,
-        });
-        bound.push(Supplied {
-            value,
-            name: Some(name.to_string()),
-        });
+        let names: Vec<language::Identifier> = names
+            .into_iter()
+            .filter(|name| lookup(bound, name.value).is_none())
+            .copied()
+            .collect();
+        self.unbind(env, &names)
+    }
+
+    // Note what the innermost scope binds, writing what its activation does
+    // not already hold.
+    fn note(&mut self, env: &Environment, names: &[language::Identifier<'_>]) -> Result<(), Halt> {
+        let scope = self.top();
+        let mut fresh = Vec::new();
+        for name in names {
+            let item = Supplied {
+                value: match env.lookup(name.value) {
+                    Some(value) => value.clone(),
+                    None => Value::Unitus,
+                },
+                name: Some(
+                    name.value
+                        .to_string(),
+                ),
+            };
+            let held = scope
+                .prior
+                .and_then(|a| lookup(&a.bound, name.value));
+            if held != Some(&item.value) {
+                fresh.push(item.clone());
+            }
+            scope
+                .bound
+                .retain(|bound| bound.name != item.name);
+            scope
+                .bound
+                .push(item);
+        }
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let (serial, path) = (
+            scope.serial,
+            scope
+                .path
+                .clone(),
+        );
+        self.write(serial, &path, State::Bind(fresh))
     }
 
     // Walk a scope's body, unless it was begun again only to take a verdict
@@ -1365,9 +1386,11 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         if again && self.pending() {
             let mut names = Vec::new();
             bindings(body, &mut names);
-            for name in names {
-                self.unbind(env, std::slice::from_ref(name));
-            }
+            let names: Vec<language::Identifier> = names
+                .into_iter()
+                .copied()
+                .collect();
+            self.unbind(env, &names)?;
             return Ok(done(Value::Unitus));
         }
         self.walk(env, body)
@@ -1510,19 +1533,14 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         if restored {
             return Ok(());
         }
-        let mut bound = scope.bound;
         // A continued scope keeps what it bound through a prompt not asked again.
-        if bound.is_empty() {
-            if let Some((_, before)) = scope
-                .prior
-                .and_then(concluded)
-            {
-                bound = before.to_vec();
-                bind_supplied(env, &bound);
+        if scope
+            .bound
+            .is_empty()
+        {
+            if let Some(a) = scope.prior {
+                bind_supplied(env, &a.bound);
             }
-        }
-        if !bound.is_empty() {
-            self.write(scope.serial, path, State::Bind(bound))?;
         }
         self.write(scope.serial, path, state_of(outcome))
     }
