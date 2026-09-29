@@ -6,7 +6,7 @@ use crate::engraving::{
 };
 use crate::value::Value;
 
-// A scratch directory under the system temp dir, cleaned up on drop so panics
+// A scratch directory under the project's target/, cleaned up on drop so panics
 // in a test do not leak it. Tests construct one per fixture they need.
 struct TempDir {
     path: PathBuf,
@@ -14,7 +14,9 @@ struct TempDir {
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("technique-{}", name));
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("technique-{}", name));
         let _ = std::fs::remove_dir_all(&path);
         TempDir { path }
     }
