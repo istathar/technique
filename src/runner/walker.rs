@@ -1428,10 +1428,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             },
             offers,
         )?;
-        // Accepting a thrown failure keeps the effect's reason.
-        Ok(match (answered(reply, produced), flow) {
-            (Outcome::Fail(given), Flow::Throwing(reason)) if given.is_empty() => {
-                Outcome::Fail(reason.clone())
+        // Accepting a failure keeps the reason it rolled up with.
+        Ok(match (answered(reply, produced), outcome_of(flow)) {
+            (Outcome::Fail(given), Outcome::Fail(reason)) if given.is_empty() => {
+                Outcome::Fail(reason)
             }
             (outcome, _) => outcome,
         })

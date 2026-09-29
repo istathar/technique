@@ -288,14 +288,14 @@ survey :
     let (records, conclusion) = walk(source, records, &[], Headless::new());
     assert_eq!(
         conclusion,
-        Conclusion::Completed(Outcome::Fail(String::new()))
+        Conclusion::Completed(Outcome::Fail("broke".to_string()))
     );
     assert_eq!(
         lines(&records[stopped..]),
         vec![
             "000 / Resume",
             "003 /survey:/2 Skip",
-            "001 /survey: Fail",
+            "001 /survey: Fail [ \"reason\" = \"broke\" ]",
             "000 / Finish",
         ]
     );
