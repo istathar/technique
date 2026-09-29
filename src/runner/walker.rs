@@ -1061,25 +1061,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             a.effects
                 .get(k)
         });
-        // A continued activation reuses the k-th recorded Return, but a bare
-        // one it may have failed on, last in an unclosed activation, is put
-        // again.
-        let reused = match recorded.map(|effect| &effect.returned) {
-            Some(Some(Some(value))) => Some(done(value.clone())),
-            Some(Some(None)) => match prior {
-                Some(a)
-                    if a.standing != engraving::Standing::Closed
-                        && k + 1
-                            == a.effects
-                                .len() =>
-                {
-                    None
-                }
-                _ => Some(Flow::Completed(Outcome::Skip(Value::Unitus))),
-            },
-            _ => None,
-        };
-        if let Some(flow) = reused {
+        if let Some(flow) = reused(prior, k) {
             self.runner
                 .driver
                 .show(Event::Announce(&described));
@@ -1098,57 +1080,8 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             )?;
         }
         let flow = match nature {
-            Nature::Command => {
-                let script = match values.first() {
-                    Some(Value::Literali(text)) => text.clone(),
-                    Some(other) => other.to_string(),
-                    None => String::new(),
-                };
-                match self.ask(
-                    Marker::Step,
-                    &path,
-                    Prompt::Command { script: &script },
-                    BOUNDARY,
-                )? {
-                    Reply::Done(chosen) => self.command(env, id, &path, chosen)?,
-                    Reply::Override => self.command(env, id, &path, Value::Literali(script))?,
-                    Reply::Skip => Flow::Completed(Outcome::Skip(Value::Unitus)),
-                    Reply::Fail(reason) => Flow::Throwing(reason),
-                }
-            }
-            Nature::Action => {
-                let verb = self
-                    .runner
-                    .library
-                    .display(id)
-                    .unwrap_or(function);
-                let shown = match values.first() {
-                    Some(value) => value.clone(),
-                    None => Value::Unitus,
-                };
-                match self.ask(
-                    Marker::Action,
-                    &path,
-                    Prompt::Action {
-                        function,
-                        verb,
-                        value: &shown,
-                    },
-                    BOUNDARY,
-                )? {
-                    Reply::Done(_) | Reply::Override => {
-                        self.runner
-                            .driver
-                            .show(Event::Action {
-                                path: &path,
-                                function,
-                            });
-                        done(self.call(id, env, &values)?)
-                    }
-                    Reply::Skip => Flow::Completed(Outcome::Skip(Value::Unitus)),
-                    Reply::Fail(reason) => Flow::Throwing(reason),
-                }
-            }
+            Nature::Command => self.command(env, id, &path, &values)?,
+            Nature::Action => self.action(env, id, &path, &values)?,
             Nature::Instant => done(self.call(id, env, &values)?),
             Nature::Pure => unreachable!(), // announced and returned above
         };
@@ -1166,8 +1099,24 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         env: &Environment,
         id: crate::program::ExecutableId,
         path: &str,
-        chosen: Value,
+        values: &[Value],
     ) -> Result<Flow, Halt> {
+        let script = match values.first() {
+            Some(Value::Literali(text)) => text.clone(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        };
+        let chosen = match self.ask(
+            Marker::Step,
+            path,
+            Prompt::Command { script: &script },
+            BOUNDARY,
+        )? {
+            Reply::Done(chosen) => chosen,
+            Reply::Override => Value::Literali(script),
+            Reply::Skip => return Ok(Flow::Completed(Outcome::Skip(Value::Unitus))),
+            Reply::Fail(reason) => return Ok(Flow::Throwing(reason)),
+        };
         let script = match &chosen {
             Value::Literali(text) => text.clone(),
             other => other.to_string(),
@@ -1185,6 +1134,45 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 code
             ))),
             Err(error) => Err(error.into()),
+        }
+    }
+
+    fn action(
+        &mut self,
+        env: &Environment,
+        id: crate::program::ExecutableId,
+        path: &str,
+        values: &[Value],
+    ) -> Result<Flow, Halt> {
+        let library = &self
+            .runner
+            .library;
+        let function = library.name(id);
+        let verb = library
+            .display(id)
+            .unwrap_or(function);
+        let shown = match values.first() {
+            Some(value) => value.clone(),
+            None => Value::Unitus,
+        };
+        match self.ask(
+            Marker::Action,
+            path,
+            Prompt::Action {
+                function,
+                verb,
+                value: &shown,
+            },
+            BOUNDARY,
+        )? {
+            Reply::Done(_) | Reply::Override => {
+                self.runner
+                    .driver
+                    .show(Event::Action { path, function });
+                Ok(done(self.call(id, env, values)?))
+            }
+            Reply::Skip => Ok(Flow::Completed(Outcome::Skip(Value::Unitus))),
+            Reply::Fail(reason) => Ok(Flow::Throwing(reason)),
         }
     }
 
@@ -1858,6 +1846,28 @@ fn stance<'h>(prior: Option<&'h Activation>, inputs: &[Supplied]) -> Stance<'h> 
         return Stance::Restore(a);
     }
     Stance::Continue(a)
+}
+
+// A continued activation reuses the k-th recorded Return, but a bare one it
+// may have failed on, last in an unclosed activation, is put again.
+fn reused(prior: Option<&Activation>, k: usize) -> Option<Flow> {
+    let a = prior?;
+    match a
+        .effects
+        .get(k)?
+        .returned
+        .as_ref()?
+    {
+        Some(value) => Some(done(value.clone())),
+        None if a.standing != engraving::Standing::Closed
+            && k + 1
+                == a.effects
+                    .len() =>
+        {
+            None
+        }
+        None => Some(Flow::Completed(Outcome::Skip(Value::Unitus))),
+    }
 }
 
 fn done(value: Value) -> Flow {
