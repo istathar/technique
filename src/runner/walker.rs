@@ -1091,7 +1091,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             a.effects
                 .get(k)
         });
-        if let Some(flow) = reused(prior, k) {
+        if let Some(flow) = reused(self.history, prior, k) {
             self.runner
                 .driver
                 .show(Event::Announce(&described));
@@ -1924,9 +1924,13 @@ fn stance<'h>(prior: Option<&'h Activation>, inputs: &[Supplied]) -> Stance<'h> 
 }
 
 // A continued activation reuses the k-th recorded Return, but a bare one it
-// may have failed on, last in an unclosed activation, is put again.
-fn reused(prior: Option<&Activation>, k: usize) -> Option<Flow> {
+// may have failed on, last in an unclosed activation, is put again; one it
+// failed on fails again.
+fn reused(history: &History, prior: Option<&Activation>, k: usize) -> Option<Flow> {
     let a = prior?;
+    let last = k + 1
+        == a.effects
+            .len();
     match a
         .effects
         .get(k)?
@@ -1934,15 +1938,36 @@ fn reused(prior: Option<&Activation>, k: usize) -> Option<Flow> {
         .as_ref()?
     {
         Some(value) => Some(done(value.clone())),
-        None if a.standing != engraving::Standing::Closed
-            && k + 1
-                == a.effects
-                    .len() =>
-        {
-            None
-        }
-        None => Some(Flow::Completed(Outcome::Skip(Value::Unitus))),
+        None if last && a.standing != engraving::Standing::Closed => None,
+        None => match &a.outcome {
+            Some(State::Fail(reason)) if last && threw(history, a) => {
+                Some(Flow::Throwing(reason_of(reason)))
+            }
+            _ => Some(Flow::Completed(Outcome::Skip(Value::Unitus))),
+        },
     }
+}
+
+// Whether a closed activation's body ended at its last effect: nothing of
+// its own but Binds and its outcome, and no child, came after.
+fn threw(history: &History, a: &Activation) -> bool {
+    let Some(&end) = a
+        .records
+        .iter()
+        .rev()
+        .find(|i| {
+            Some(**i) != a.closed_at
+                && !a
+                    .bound_at
+                    .contains(i)
+        })
+    else {
+        return false;
+    };
+    a.children
+        .iter()
+        .filter_map(|child| history.get(*child))
+        .all(|child| child.begun_at < end)
 }
 
 fn done(value: Value) -> Flow {
