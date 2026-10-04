@@ -111,7 +111,11 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
             Prompt::Confirm { produced, .. } => self.emit(Trail::Leave {
                 path,
                 outcome: disposition(&answer),
-                result: produced.clone(),
+                result: if let Answer::Done(value) = &answer {
+                    value.clone()
+                } else {
+                    produced.clone()
+                },
             }),
             Prompt::Acquire {
                 text, name, forma, ..
@@ -127,7 +131,11 @@ impl<D: Driver, W: Write> Driver for Transcript<D, W> {
             }),
             Prompt::Command { script } => self.emit(Trail::Execute {
                 path,
-                script: script.to_string(),
+                script: if let Answer::Done(Value::Literali(text)) = &answer {
+                    text.clone()
+                } else {
+                    script.to_string()
+                },
             }),
             Prompt::Action { verb, value, .. } => self.emit(Trail::Execute {
                 path,
