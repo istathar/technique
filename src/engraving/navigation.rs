@@ -117,11 +117,11 @@ impl<'i> Journal<'i> {
     pub fn last(&self) -> Option<Position> {
         self.order
             .iter()
-            .filter(|at| {
+            .rev()
+            .find(|at| {
                 self.prompt
                     .map_or(true, |prompt| self.inside(self.within(**at), prompt))
             })
-            .last()
             .map(|at| Position::At(*at))
     }
 
@@ -279,7 +279,7 @@ fn standing(history: &History, serial: Serial) -> bool {
 
 fn place(history: &History, serial: Serial, order: &mut Vec<usize>) {
     let activation = match history.get(serial) {
-        Some(activation) if activation.standing != Standing::Withdrawn => activation,
+        Some(activation) if standing(history, serial) => activation,
         _ => return,
     };
     let mut own = activation
