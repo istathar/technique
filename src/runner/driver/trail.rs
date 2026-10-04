@@ -164,7 +164,7 @@ pub(super) fn render<W: Write>(out: &mut W, renderer: &dyn Render, event: &Event
             }
         }
         Event::Announce(message) => indented(out, message, 1),
-        Event::Restart => marker_line(out, renderer, &"─".repeat(SEPARATOR)),
+        Event::Restart => marker_line(out, renderer, SEPARATOR),
         Event::Conclude { label, verdict } => {
             let (mark, syntax) = verdict_glyph(verdict);
             let _ = writeln!(
@@ -177,7 +177,7 @@ pub(super) fn render<W: Write>(out: &mut W, renderer: &dyn Render, event: &Event
     }
 }
 
-const SEPARATOR: usize = 40;
+const SEPARATOR: &str = "────────────────────────────────────────";
 
 fn marker_line<W: Write>(out: &mut W, renderer: &dyn Render, text: &str) {
     let _ = writeln!(out, "{}", renderer.style(Syntax::Marker, text));
@@ -185,9 +185,8 @@ fn marker_line<W: Write>(out: &mut W, renderer: &dyn Render, text: &str) {
 
 /// Four spaces per `depth`, and at least one level.
 pub(super) fn indented<W: Write>(out: &mut W, text: &str, depth: usize) {
-    let pad = " ".repeat(4 * depth.max(1));
     for line in text.lines() {
-        let _ = writeln!(out, "{}{}", pad, line);
+        let _ = writeln!(out, "{:w$}{}", "", line, w = 4 * depth.max(1));
     }
 }
 

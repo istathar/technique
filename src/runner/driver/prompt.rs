@@ -2,6 +2,8 @@
 //! `Intent` at a time and returns an answer once the user has given one.
 
 use crate::engraving::{Motion, serialize_value};
+use crate::parsing::parse_numeric;
+use crate::runner::evaluator::parse_list_literal;
 use crate::value::{Numeric, Value};
 
 use super::keys::Intent;
@@ -94,8 +96,10 @@ impl Menu {
         Some(self.offers[at])
     }
 
-    fn chosen(&self) -> Offer {
-        self.offers[self.active]
+    fn chosen(&self) -> Option<Offer> {
+        self.offers
+            .get(self.active)
+            .copied()
     }
 }
 
@@ -269,7 +273,7 @@ impl Asking {
                 menu.step(motion, |item| offerable(field, item));
                 return None;
             }
-            Intent::Accept => menu.chosen(),
+            Intent::Accept => menu.chosen()?,
             Intent::Typed(c) => menu.select(c, |item| offerable(field, item))?,
             Intent::Decline => {
                 self.menu = None;
@@ -320,7 +324,7 @@ impl Asking {
                 Intent::Accept => {
                     if *bracketed {
                         // A buffer that does not parse is refused, leaving the edit open.
-                        crate::runner::evaluator::parse_list_literal(&format!("[{}]", buffer))
+                        parse_list_literal(&format!("[{}]", buffer))
                             .map(|items| Answer::Done(Value::Arraeum(items)))
                     } else if buffer.is_empty() {
                         // Text requires a value; declining is Skip or Fail from the menu.
@@ -328,7 +332,7 @@ impl Asking {
                     } else if !*edited {
                         Some(Answer::Done(std::mem::replace(original, Value::Unitus)))
                     } else if let Value::Quanticle(_) = original {
-                        crate::parsing::parse_numeric(buffer)
+                        parse_numeric(buffer)
                             .map(|numeric| Answer::Done(Value::Quanticle(Numeric::from(&numeric))))
                     } else {
                         Some(Answer::Done(Value::Literali(std::mem::take(buffer))))
@@ -421,7 +425,7 @@ impl Reviewing {
                         menu.step(motion, |_| true);
                         return None;
                     }
-                    Intent::Accept => menu.chosen(),
+                    Intent::Accept => menu.chosen()?,
                     Intent::Typed(c) => menu.select(c, |_| true)?,
                     Intent::Decline => {
                         self.menu = None;
