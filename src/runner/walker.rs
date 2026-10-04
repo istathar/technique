@@ -597,7 +597,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             _ => {
                 let again = self.open(&slot, &path, Vec::new(), stance)?;
                 let flow = if again && self.pending() {
-                    done(Value::Unitus)
+                    self.withhold(env, ops)?
                 } else {
                     self.walk_sequence(env, ops)?
                 };
@@ -1384,16 +1384,24 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         again: bool,
     ) -> Result<Flow, Halt> {
         if again && self.pending() {
-            let mut names = Vec::new();
-            bindings(body, &mut names);
-            let names: Vec<language::Identifier> = names
-                .into_iter()
-                .copied()
-                .collect();
-            self.unbind(env, &names)?;
-            return Ok(done(Value::Unitus));
+            return self.withhold(env, std::slice::from_ref(body));
         }
         self.walk(env, body)
+    }
+
+    // A verdict chosen in review stands in for the body, which binds unit to
+    // each name it would have bound.
+    fn withhold(&mut self, env: &mut Environment, ops: &'i [Operation<'i>]) -> Result<Flow, Halt> {
+        let mut names = Vec::new();
+        for op in ops {
+            bindings(op, &mut names);
+        }
+        let names: Vec<language::Identifier> = names
+            .into_iter()
+            .copied()
+            .collect();
+        self.unbind(env, &names)?;
+        Ok(done(Value::Unitus))
     }
 
     // A structural scope's close: the entry, a section, an invoked procedure.
