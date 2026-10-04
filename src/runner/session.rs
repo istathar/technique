@@ -163,6 +163,7 @@ impl<'i, D: Driver> Runner<'i, D> {
                 }
                 Err(Halt::Stop) => return Ok(Conclusion::Stopping),
                 Err(Halt::Restart(chosen)) => {
+                    replaying = false;
                     amendment = Some(chosen);
                     self.driver
                         .show(Event::Restart);
@@ -299,7 +300,7 @@ impl<'i, D: Driver> Runner<'i, D> {
             );
         };
         // Amending a finished run starts a session of its own.
-        if prompt.is_none() {
+        if history.finished() {
             self.defer(Serial::LIFECYCLE, "/", State::Resume);
         }
         self.defer(serial, &path, State::Revoke);
