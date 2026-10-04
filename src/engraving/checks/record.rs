@@ -719,7 +719,6 @@ fn journal(name: &str, content: &str) -> (TempDir, PathBuf) {
     std::fs::create_dir_all(&run_dir).unwrap();
     let pfftt = run_dir.join("Test.pfftt");
     std::fs::write(&pfftt, content).unwrap();
-    std::fs::write(run_dir.join("Test.tq"), "").unwrap();
     (dir, pfftt)
 }
 
@@ -745,8 +744,7 @@ fn a_torn_last_line_is_ignored_and_cut_before_appending() {
         path: "/test:/2".to_string(),
         state: State::Done(None),
     };
-    let mut appender =
-        Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1)).expect("open");
+    let (mut appender, _) = Appender::open(pfftt.clone(), RunId(1)).expect("open");
     appender
         .append(&record)
         .expect("append");
@@ -773,7 +771,7 @@ fn an_unterminated_last_line_is_cut_even_if_it_parses() {
         .expect("read");
     assert_eq!(records.len(), 1);
 
-    let _ = Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1)).expect("open");
+    let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open");
     let (head, _) = JOURNAL
         .split_once('\n')
         .unwrap();
@@ -802,22 +800,19 @@ fn a_line_torn_inside_a_character_is_cut() {
         .expect("read");
     assert_eq!(records.len(), 2);
 
-    let _ = Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1)).expect("open");
+    let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open");
     assert_eq!(std::fs::read_to_string(&pfftt).unwrap(), JOURNAL);
 }
 
 #[test]
 fn a_run_records_one_session_at_a_time() {
     let (_dir, pfftt) = journal("one-session", JOURNAL);
-    let first = Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1)).expect("open");
-    let Err(StoreError::InUse(RunId(1))) =
-        Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1))
-    else {
+    let first = Appender::open(pfftt.clone(), RunId(1)).expect("open");
+    let Err(StoreError::InUse(RunId(1))) = Appender::open(pfftt.clone(), RunId(1)) else {
         panic!("expected InUse");
     };
     drop(first);
-    let _ = Appender::open(pfftt.clone(), &pfftt.with_extension("tq"), RunId(1))
-        .expect("open after release");
+    let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open after release");
 }
 
 #[test]

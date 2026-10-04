@@ -110,27 +110,7 @@ impl Store {
         if let Some(start) = torn(&content) {
             content.truncate(start);
         }
-        let content = String::from_utf8(content).map_err(|error| StoreError::Io {
-            path: pfftt.clone(),
-            error: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-        })?;
-
-        content
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| {
-                !line
-                    .trim()
-                    .is_empty()
-            })
-            .map(|(i, line)| {
-                parse_record(line).map_err(|error| StoreError::MalformedRecord {
-                    run_id,
-                    line: i + 1,
-                    error,
-                })
-            })
-            .collect()
+        parse_journal(content, &pfftt, run_id)
     }
 
     /// Open an existing run. Parses the leading `Start` record to recover the
@@ -239,6 +219,30 @@ fn torn(content: &[u8]) -> Option<usize> {
     Some(start)
 }
 
+// Parse a journal's records, its torn last line already cut.
+fn parse_journal(content: Vec<u8>, path: &Path, run_id: RunId) -> Result<Vec<Record>, StoreError> {
+    let content = String::from_utf8(content).map_err(|error| StoreError::Io {
+        path: path.to_path_buf(),
+        error: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            !line
+                .trim()
+                .is_empty()
+        })
+        .map(|(i, line)| {
+            parse_record(line).map_err(|error| StoreError::MalformedRecord {
+                run_id,
+                line: i + 1,
+                error,
+            })
+        })
+        .collect()
+}
+
 // Compute the on-disk PFFTT file path for a run, named using the source
 // document's stem.
 pub(crate) fn construct_state_path(run_dir: &Path, document: &Path) -> PathBuf {
@@ -260,31 +264,11 @@ pub(crate) fn construct_source_path(run_dir: &Path, document: &Path) -> PathBuf 
     run_dir.join(name)
 }
 
-// Lock the run's copy of the source document until the returned file is dropped.
-fn hold(source: &Path, run_id: RunId) -> Result<std::fs::File, StoreError> {
-    let file = std::fs::File::open(source).map_err(|error| StoreError::Io {
-        path: source.to_path_buf(),
-        error,
-    })?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::InUse(run_id)),
-        Err(std::fs::TryLockError::Error(error)) => Err(StoreError::Io {
-            path: source.to_path_buf(),
-            error,
-        }),
-    }
-}
-
 /// Where an `Appender` sends its records, normally an append-only PFFTT file
 /// in the store, or an in-memory sink for test runs that keep no persistent
 /// state.
 enum Target {
-    File {
-        file: std::fs::File,
-        path: PathBuf,
-        _lock: std::fs::File,
-    },
+    File { file: std::fs::File, path: PathBuf },
     Memory(String),
     Discard,
 }
@@ -298,36 +282,42 @@ pub struct Appender {
 }
 
 impl Appender {
-    /// Open an existing PFFTT file for append, cutting away a torn last line.
-    /// Holds a lock on `source` until dropped; a second session is refused.
-    pub fn open(path: PathBuf, source: &Path, run_id: RunId) -> Result<Self, StoreError> {
-        let lock = hold(source, run_id)?;
-        let content = std::fs::read(&path).map_err(|error| StoreError::Io {
+    /// Open an existing PFFTT file for append, and read back its records.
+    /// Holds a lock on the file until dropped so if a second session is
+    /// attempted from another process it won't be able to run.
+    pub fn open(path: PathBuf, run_id: RunId) -> Result<(Self, Vec<Record>),
+    StoreError> {
+        use std::io::Read;
+        let failed = |error| StoreError::Io {
             path: path.clone(),
             error,
-        })?;
-        let file = std::fs::OpenOptions::new()
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
-            .map_err(|error| StoreError::Io {
-                path: path.clone(),
-                error,
-            })?;
+            .map_err(failed)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(StoreError::InUse(run_id)),
+            Err(std::fs::TryLockError::Error(error)) => return Err(failed(error)),
+        }
+        let mut content = Vec::new();
+        file.read_to_end(&mut content)
+            .map_err(failed)?;
         if let Some(start) = torn(&content) {
             file.set_len(start as u64)
-                .map_err(|error| StoreError::Io {
-                    path: path.clone(),
-                    error,
-                })?;
+                .map_err(failed)?;
+            content.truncate(start);
         }
-        Ok(Appender {
-            target: Target::File {
-                file,
-                path,
-                _lock: lock,
+        let records = parse_journal(content, &path, run_id)?;
+        Ok((
+            Appender {
+                target: Target::File { file, path },
+                run_id,
             },
-            run_id,
-        })
+            records,
+        ))
     }
 
     /// An Appender that discards every record for use in tests.
@@ -367,7 +357,7 @@ impl Appender {
         use std::io::Write;
         let text = format_record(record);
         match &mut self.target {
-            Target::File { file, path, .. } => file
+            Target::File { file, path } => file
                 .write_all(text.as_bytes())
                 .map_err(|error| StoreError::Io {
                     path: path.clone(),

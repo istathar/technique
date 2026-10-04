@@ -434,36 +434,61 @@ pub fn start<'i>(
         }
     }
     let store = Store::new(PathBuf::from(STORE_ROOT));
-    let (run_id, run_dir) = store.create(document, source, now_iso8601(), libraries)?;
-    let appender = Appender::open(
-        construct_state_path(&run_dir, document),
-        &construct_source_path(&run_dir, document),
-        run_id,
-    )?;
-    let records = store.read(run_id)?;
-    let label = document_label(document);
+    let (run_id, _) = store.create(document, source, now_iso8601(), libraries)?;
+    let conclusion = walk(run_id, mode, colour, program, library, supplied)?;
+    Ok((run_id, conclusion))
+}
+
+/// Walk an existing run again from the top against its journal. A finished
+/// run opens in review.
+pub fn resume<'i>(
+    run_id: RunId,
+    mode: Mode,
+    colour: bool,
+    program: &'i Program<'i>,
+    library: Library,
+) -> Result<Conclusion, RunnerError> {
+    if let Mode::Interactive = mode {
+        if !std::io::stdout().is_terminal() {
+            return Err(RunnerError::TerminalRequired);
+        }
+    }
+    walk(run_id, mode, colour, program, library, Vec::new())
+}
+
+fn walk<'i>(
+    run_id: RunId,
+    mode: Mode,
+    colour: bool,
+    program: &'i Program<'i>,
+    library: Library,
+    arguments: Vec<Supplied>,
+) -> Result<Conclusion, RunnerError> {
+    let store = Store::new(PathBuf::from(STORE_ROOT));
+    let (document, _, run_dir) = store.open(run_id)?;
+    let (appender, records) = Appender::open(construct_state_path(&run_dir, &document), run_id)?;
+    let label = document_label(&document);
     let context = Context::native(colour);
-    let conclusion = match mode {
+    match mode {
         Mode::Interactive => drive(
             Runner::new(program, appender, records, Console::new(), library),
             context,
             label,
-            supplied,
+            arguments,
         ),
         Mode::Automatic => drive(
             Runner::new(program, appender, records, Automatic::new(colour), library),
             context,
             label,
-            supplied,
+            arguments,
         ),
         Mode::Quiet => drive(
             Runner::new(program, appender, records, Headless::new(), library),
             context,
             label,
-            supplied,
+            arguments,
         ),
-    }?;
-    Ok((run_id, conclusion))
+    }
 }
 
 fn drive<'i, D: Driver>(
@@ -526,32 +551,6 @@ pub fn locate(run_id: RunId) -> Result<(PathBuf, Vec<String>), RunnerError> {
 pub fn load(run_id: RunId) -> Result<Vec<Record>, RunnerError> {
     let store = Store::new(PathBuf::from(STORE_ROOT));
     Ok(store.read(run_id)?)
-}
-
-/// Walk an existing run again from the top against its journal. A finished
-/// run opens in review.
-pub fn resume<'i>(
-    run_id: RunId,
-    program: &'i Program<'i>,
-    library: Library,
-) -> Result<Conclusion, RunnerError> {
-    if !std::io::stdout().is_terminal() {
-        return Err(RunnerError::TerminalRequired);
-    }
-    let store = Store::new(PathBuf::from(STORE_ROOT));
-    let (document, _, run_dir) = store.open(run_id)?;
-    let appender = Appender::open(
-        construct_state_path(&run_dir, &document),
-        &construct_source_path(&run_dir, &document),
-        run_id,
-    )?;
-    let records = store.read(run_id)?;
-    drive(
-        Runner::new(program, appender, records, Console::new(), library),
-        Context::native(true),
-        document_label(&document),
-        Vec::new(),
-    )
 }
 
 /// The entry procedure's `Begin`, from the command-line arguments, each

@@ -1169,7 +1169,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            match runner::resume(run_id, &program, library) {
+            match runner::resume(run_id, Mode::Interactive, true, &program, library) {
                 Ok(Conclusion::Stopping) => {
                     eprintln!(
                         "stopped; resume with `technique resume {}`",
