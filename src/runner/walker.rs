@@ -543,7 +543,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 )?;
                 Ok(answered(reply, produced))
             }
-            Flow::Completed(Outcome::Fail(_)) if !acquired => {
+            Flow::Completed(Outcome::Fail(reason)) if !acquired => {
                 let reply = self.ask(
                     Marker::Step,
                     path,
@@ -555,7 +555,11 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     },
                     OVERRULE,
                 )?;
-                Ok(answered(reply, Value::Unitus))
+                // Accepting a failure keeps the reason it rolled up with.
+                Ok(match answered(reply, Value::Unitus) {
+                    Outcome::Fail(given) if given.is_empty() => Outcome::Fail(reason),
+                    outcome => outcome,
+                })
             }
             other => Ok(outcome_of(&other)),
         }
