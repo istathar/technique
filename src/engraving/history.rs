@@ -92,6 +92,8 @@ impl History {
         {
             let serial = record.serial;
             match &record.state {
+                // A corrupt journal's `Begin` on 000 would make the root its own ancestor.
+                State::Begin(_) if serial == Serial::LIFECYCLE => {}
                 State::Begin(began) => {
                     history.finished = false;
                     if history

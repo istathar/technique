@@ -649,6 +649,28 @@ fn finished_is_how_the_last_session_ended() {
     assert!(!fold(&format!("{}\n000 / Resume\n000 / Stop", ended)).finished());
 }
 
+#[test]
+fn a_begin_on_the_lifecycle_serial_is_ignored() {
+    let history = fold(
+        r#"
+        000 / Start file://Survey.tq
+        000 /x: Begin ()
+        000 /x: Revoke
+        000 /x: Begin ()
+        "#,
+    );
+    assert!(
+        history
+            .get(Serial::LIFECYCLE)
+            .is_none()
+    );
+    assert!(
+        history
+            .roots()
+            .is_empty()
+    );
+}
+
 // Every serial written has a current activation holding only its own records,
 // in the slot it was first begun at and among its parent's children. A journal
 // never amended has every record held.
