@@ -782,6 +782,29 @@ fn an_unterminated_last_line_is_cut_even_if_it_parses() {
 }
 
 #[test]
+fn a_line_torn_inside_a_character_is_cut() {
+    let mut content = format!(
+        "{}2026-05-14T12:00:02Z 000001 002 /test:/2 Done \"é",
+        JOURNAL
+    )
+    .into_bytes();
+    content.pop();
+    let (dir, pfftt) = journal("torn-inside-character", "");
+    std::fs::write(&pfftt, &content).unwrap();
+    let store = Store::new(
+        dir.path
+            .clone(),
+    );
+    let records = store
+        .read(RunId(1))
+        .expect("read");
+    assert_eq!(records.len(), 2);
+
+    let _ = Appender::open(pfftt.clone(), RunId(1)).expect("open");
+    assert_eq!(std::fs::read_to_string(&pfftt).unwrap(), JOURNAL);
+}
+
+#[test]
 fn a_malformed_line_names_its_line_number() {
     let (dir, _) = journal(
         "malformed-line",

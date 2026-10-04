@@ -103,16 +103,20 @@ impl Store {
             return Err(StoreError::NoSuchRun(run_id));
         }
         let pfftt = find_pfftt_file(&run_dir, run_id)?;
-        let content = std::fs::read_to_string(&pfftt).map_err(|error| StoreError::Io {
+        let mut content = std::fs::read(&pfftt).map_err(|error| StoreError::Io {
             path: pfftt.clone(),
             error,
         })?;
+        if let Some(start) = torn(&content) {
+            content.truncate(start);
+        }
+        let content = String::from_utf8(content).map_err(|error| StoreError::Io {
+            path: pfftt.clone(),
+            error: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
 
-        let kept = match torn(&content) {
-            Some(start) => &content[..start],
-            None => &content,
-        };
-        kept.lines()
+        content
+            .lines()
             .enumerate()
             .filter(|(_, line)| {
                 !line
@@ -224,12 +228,13 @@ pub(crate) fn parse_run_uri(uri: &str) -> (PathBuf, Vec<String>) {
 
 // Where a last line cut short mid-write begins: every record is written with
 // its newline, so one lacking it is broken even if it parses.
-fn torn(content: &str) -> Option<usize> {
-    if content.is_empty() || content.ends_with('\n') {
+fn torn(content: &[u8]) -> Option<usize> {
+    if content.is_empty() || content.ends_with(b"\n") {
         return None;
     }
     let start = content
-        .rfind('\n')
+        .iter()
+        .rposition(|b| *b == b'\n')
         .map_or(0, |i| i + 1);
     Some(start)
 }
@@ -275,7 +280,7 @@ pub struct Appender {
 impl Appender {
     /// Open an existing PFFTT file for append, cutting away a torn last line.
     pub fn open(path: PathBuf, run_id: RunId) -> Result<Self, StoreError> {
-        let content = std::fs::read_to_string(&path).map_err(|error| StoreError::Io {
+        let content = std::fs::read(&path).map_err(|error| StoreError::Io {
             path: path.clone(),
             error,
         })?;
