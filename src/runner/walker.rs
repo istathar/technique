@@ -1272,7 +1272,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                             self.unbind(env, names)?;
                             return Ok(Flow::Completed(Outcome::Skip(Value::Unitus)));
                         }
-                        Reply::Fail(reason) => return Ok(Flow::Completed(Outcome::Fail(reason))),
+                        Reply::Fail(reason) => {
+                            self.unbind(env, names)?;
+                            return Ok(Flow::Completed(Outcome::Fail(reason)));
+                        }
                     }
                 }
             };
