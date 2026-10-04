@@ -2,3 +2,4 @@
 Enter*8                 # /2 /3 report:/1 report:/2 report: /4 /5 survey:
 --- resume
 Up*12 Esc "s"           # review from survey: Done to /3 Done and skip it
+Enter                   # survey:

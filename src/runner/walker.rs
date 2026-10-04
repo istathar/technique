@@ -113,6 +113,8 @@ struct Scope<'h> {
     occurrences: HashMap<String, usize>,
     iterations: usize,
     reached: Vec<Serial>,
+    /// A child closed differently from before, or was revoked.
+    changed: bool,
 }
 
 impl<'h> Scope<'h> {
@@ -130,6 +132,7 @@ impl<'h> Scope<'h> {
             occurrences: HashMap::new(),
             iterations: 0,
             reached: Vec::new(),
+            changed: false,
         }
     }
 }
@@ -475,10 +478,8 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         } else {
             self.perform(env, body, again)?
         };
-        let rollup = outcome_of(&flow);
-        let (outcome, restored) = self.resolve(env, &rollup, |walker| {
-            walker.confirm(op, &path, flow, slot.seed)
-        })?;
+        let (outcome, restored) =
+            self.resolve(env, |walker| walker.confirm(op, &path, flow, slot.seed))?;
         if !restored {
             if chooses {
                 self.choose(env, body, &outcome)?;
@@ -605,8 +606,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 } else {
                     self.walk_sequence(env, ops)?
                 };
-                let rollup = outcome_of(&flow);
-                let (outcome, restored) = self.resolve(env, &rollup, |_| Ok(rollup.clone()))?;
+                let (outcome, restored) = self.resolve(env, |_| Ok(outcome_of(&flow)))?;
                 if !restored {
                     self.vacate(env, ops, &outcome)?;
                 }
@@ -754,18 +754,18 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                         echo: &echo,
                     });
                 let flow = self.perform(env, body, again)?;
-                let rollup = outcome_of(&flow);
-                // Asks only when its standing departs from a former verdict.
-                let former = self
+                // Only an iteration closed before asks.
+                let reclosing = self
                     .top()
                     .prior
                     .and_then(concluded)
-                    .map(|(state, _)| rank_of_state(state));
-                let (outcome, restored) = self.resolve(env, &rollup, |walker| match former {
-                    Some(standing) if standing != rank(&rollup) => {
+                    .is_some();
+                let (outcome, restored) = self.resolve(env, |walker| {
+                    if reclosing {
                         walker.close(&path, &flow, kind_of_scope(body))
+                    } else {
+                        Ok(outcome_of(&flow))
                     }
-                    _ => Ok(rollup.clone()),
                 })?;
                 if !restored {
                     self.vacate(env, std::slice::from_ref(body), &outcome)?;
@@ -967,9 +967,26 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         supplied: Vec<Supplied>,
         outcome: Outcome,
     ) -> Result<Result<Vec<Supplied>, Flow>, Halt> {
+        let state = state_of(&outcome);
+        self.compare(slot.seed, &state);
         self.write(slot.serial, path, State::Begin(supplied))?;
-        self.write(slot.serial, path, state_of(&outcome))?;
+        self.write(slot.serial, path, state)?;
         Ok(Err(Flow::Completed(outcome)))
+    }
+
+    // Mark the innermost scope changed if a child closed differently from before.
+    fn compare(&mut self, seed: Option<&'h Activation>, state: &State) {
+        let former = seed.and_then(|a| {
+            a.outcome
+                .as_ref()
+                .or(a
+                    .former_outcome
+                    .as_ref())
+        });
+        if former != Some(state) {
+            self.top()
+                .changed = true;
+        }
     }
 
     fn walk_external(
@@ -997,29 +1014,27 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             Stance::Restore(a) => self.restore(env, a, Marker::Return)?,
             _ => {
                 self.open(&slot, &path, Vec::new(), stance)?;
-                let (outcome, restored) =
-                    self.resolve(env, &Outcome::Done(Value::Unitus), |walker| {
-                        match walker.ask(
-                            Marker::Depart,
-                            &path,
-                            Prompt::Depart { echo: &echo },
-                            BOUNDARY,
-                        )? {
-                            Reply::Skip => return Ok(Outcome::Skip(Value::Unitus)),
-                            Reply::Fail(reason) => return Ok(Outcome::Fail(reason)),
-                            Reply::Done(_) | Reply::Override => {}
-                        }
-                        walker
-                            .runner
-                            .driver
-                            .show(Event::Depart {
-                                path: &path,
-                                echo: &echo,
-                            });
-                        let reply =
-                            walker.ask(Marker::Return, &path, Prompt::External, BOUNDARY)?;
-                        Ok(answered(reply, Value::Unitus))
-                    })?;
+                let (outcome, restored) = self.resolve(env, |walker| {
+                    match walker.ask(
+                        Marker::Depart,
+                        &path,
+                        Prompt::Depart { echo: &echo },
+                        BOUNDARY,
+                    )? {
+                        Reply::Skip => return Ok(Outcome::Skip(Value::Unitus)),
+                        Reply::Fail(reason) => return Ok(Outcome::Fail(reason)),
+                        Reply::Done(_) | Reply::Override => {}
+                    }
+                    walker
+                        .runner
+                        .driver
+                        .show(Event::Depart {
+                            path: &path,
+                            echo: &echo,
+                        });
+                    let reply = walker.ask(Marker::Return, &path, Prompt::External, BOUNDARY)?;
+                    Ok(answered(reply, Value::Unitus))
+                })?;
                 self.finish(env, Marker::Return, &path, &outcome, restored)?;
                 Flow::Completed(outcome)
             }
@@ -1423,9 +1438,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         flow: Flow,
         kind: Kind,
     ) -> Result<Outcome, Halt> {
-        let rollup = outcome_of(&flow);
-        let (outcome, restored) =
-            self.resolve(env, &rollup, |walker| walker.close(path, &flow, kind))?;
+        let (outcome, restored) = self.resolve(env, |walker| walker.close(path, &flow, kind))?;
         self.finish(env, Marker::Close, path, &outcome, restored)?;
         Ok(outcome)
     }
@@ -1461,10 +1474,9 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
     fn resolve(
         &mut self,
         env: &mut Environment,
-        rollup: &Outcome,
         ordinary: impl FnOnce(&mut Self) -> Result<Outcome, Halt>,
     ) -> Result<(Outcome, bool), Halt> {
-        match self.conclude(rollup)? {
+        match self.conclude()? {
             Closing::Restored(outcome) => {
                 if let Some(a) = self
                     .top()
@@ -1479,7 +1491,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         }
     }
 
-    fn conclude(&mut self, rollup: &Outcome) -> Result<Closing, Halt> {
+    fn conclude(&mut self) -> Result<Closing, Halt> {
         let history = self.history;
         let scope = self.top();
         let serial = scope.serial;
@@ -1497,6 +1509,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 .filter_map(|child| history.get(*child))
                 .filter(|child| child.standing != engraving::Standing::Withdrawn)
                 .collect();
+            if !unreached.is_empty() {
+                self.top()
+                    .changed = true;
+            }
             for child in unreached {
                 self.write(child.serial, &child.path, State::Revoke)?;
             }
@@ -1510,14 +1526,16 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         if self.written == mark && a.standing == engraving::Standing::Closed {
             return Ok(Closing::Restored(recorded(a)));
         }
-        if a.revoked {
+        if a.revoked
+            || self
+                .top()
+                .changed
+        {
             return Ok(Closing::Ask);
         }
         match concluded(a) {
-            Some((state, _)) if rank_of_state(state) == rank(rollup) => {
-                Ok(Closing::Given(rollup.clone()))
-            }
-            _ => Ok(Closing::Ask),
+            Some((state, _)) => Ok(Closing::Given(outcome_from(state))),
+            None => Ok(Closing::Ask),
         }
     }
 
@@ -1552,6 +1570,8 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
         if restored {
             return Ok(());
         }
+        let state = state_of(outcome);
+        self.compare(scope.seed, &state);
         // A continued scope keeps what it bound through a prompt not asked again.
         if scope
             .bound
@@ -1561,7 +1581,7 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 bind_supplied(env, &a.bound);
             }
         }
-        self.write(scope.serial, path, state_of(outcome))
+        self.write(scope.serial, path, state)
     }
 
     // A leaf whose recorded outcome stands: bind what it bound, yield what it
@@ -2009,28 +2029,19 @@ fn answered(reply: Reply, produced: Value) -> Outcome {
     }
 }
 
-fn rank(outcome: &Outcome) -> Standing {
-    match outcome {
-        Outcome::Done(_) => Standing::Done,
-        Outcome::Skip(_) => Standing::Skip,
-        Outcome::Fail(_) => Standing::Fail,
-    }
-}
-
-fn rank_of_state(state: &State) -> Standing {
-    match state {
-        State::Skip => Standing::Skip,
-        State::Fail(_) => Standing::Fail,
-        _ => Standing::Done,
-    }
-}
-
 /// The outcome an activation recorded.
 pub(super) fn recorded(a: &Activation) -> Outcome {
     match &a.outcome {
-        Some(State::Skip) => Outcome::Skip(Value::Unitus),
-        Some(State::Fail(reason)) => Outcome::Fail(reason_of(reason)),
-        Some(State::Done(Some(value))) => Outcome::Done(value.clone()),
+        Some(state) => outcome_from(state),
+        None => Outcome::Done(Value::Unitus),
+    }
+}
+
+fn outcome_from(state: &State) -> Outcome {
+    match state {
+        State::Skip => Outcome::Skip(Value::Unitus),
+        State::Fail(reason) => Outcome::Fail(reason_of(reason)),
+        State::Done(Some(value)) => Outcome::Done(value.clone()),
         _ => Outcome::Done(Value::Unitus),
     }
 }
