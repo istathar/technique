@@ -260,11 +260,31 @@ pub(crate) fn construct_source_path(run_dir: &Path, document: &Path) -> PathBuf 
     run_dir.join(name)
 }
 
+// Lock the run's copy of the source document until the returned file is dropped.
+fn hold(source: &Path, run_id: RunId) -> Result<std::fs::File, StoreError> {
+    let file = std::fs::File::open(source).map_err(|error| StoreError::Io {
+        path: source.to_path_buf(),
+        error,
+    })?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::InUse(run_id)),
+        Err(std::fs::TryLockError::Error(error)) => Err(StoreError::Io {
+            path: source.to_path_buf(),
+            error,
+        }),
+    }
+}
+
 /// Where an `Appender` sends its records, normally an append-only PFFTT file
 /// in the store, or an in-memory sink for test runs that keep no persistent
 /// state.
 enum Target {
-    File { file: std::fs::File, path: PathBuf },
+    File {
+        file: std::fs::File,
+        path: PathBuf,
+        _lock: std::fs::File,
+    },
     Memory(String),
     Discard,
 }
@@ -279,7 +299,9 @@ pub struct Appender {
 
 impl Appender {
     /// Open an existing PFFTT file for append, cutting away a torn last line.
-    pub fn open(path: PathBuf, run_id: RunId) -> Result<Self, StoreError> {
+    /// Holds a lock on `source` until dropped; a second session is refused.
+    pub fn open(path: PathBuf, source: &Path, run_id: RunId) -> Result<Self, StoreError> {
+        let lock = hold(source, run_id)?;
         let content = std::fs::read(&path).map_err(|error| StoreError::Io {
             path: path.clone(),
             error,
@@ -299,7 +321,11 @@ impl Appender {
                 })?;
         }
         Ok(Appender {
-            target: Target::File { file, path },
+            target: Target::File {
+                file,
+                path,
+                _lock: lock,
+            },
             run_id,
         })
     }
@@ -341,7 +367,7 @@ impl Appender {
         use std::io::Write;
         let text = format_record(record);
         match &mut self.target {
-            Target::File { file, path } => file
+            Target::File { file, path, .. } => file
                 .write_all(text.as_bytes())
                 .map_err(|error| StoreError::Io {
                     path: path.clone(),

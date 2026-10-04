@@ -13,6 +13,7 @@ mod store;
 #[derive(Debug)]
 pub enum StoreError {
     NoSuchRun(RunId),
+    InUse(RunId),
     StartMissing(RunId),
     InvalidRunId(String),
     MalformedRecord {

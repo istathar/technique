@@ -1537,6 +1537,15 @@ pub fn generate_store_error(error: &StoreError, _renderer: &dyn Render) -> (Stri
             "The directory for this run identifier was not found in the local state store."
                 .to_string(),
         ),
+        StoreError::InUse(run_id) => (
+            format!("Run '{:06}' is in use by another session", run_id.0),
+            r#"
+Another technique process is recording against this RunId. Only one session
+can record into a run at a time; finish or quit the other session first.
+            "#
+            .trim_ascii()
+            .to_string(),
+        ),
         StoreError::Io { path, error } => (
             format!("I/O error with local state store at {}", path.display()),
             format!("{}", error),

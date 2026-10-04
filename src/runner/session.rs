@@ -435,8 +435,12 @@ pub fn start<'i>(
     }
     let store = Store::new(PathBuf::from(STORE_ROOT));
     let (run_id, run_dir) = store.create(document, source, now_iso8601(), libraries)?;
+    let appender = Appender::open(
+        construct_state_path(&run_dir, document),
+        &construct_source_path(&run_dir, document),
+        run_id,
+    )?;
     let records = store.read(run_id)?;
-    let appender = Appender::open(construct_state_path(&run_dir, document), run_id)?;
     let label = document_label(document);
     let context = Context::native(colour);
     let conclusion = match mode {
@@ -536,8 +540,12 @@ pub fn resume<'i>(
     }
     let store = Store::new(PathBuf::from(STORE_ROOT));
     let (document, _, run_dir) = store.open(run_id)?;
+    let appender = Appender::open(
+        construct_state_path(&run_dir, &document),
+        &construct_source_path(&run_dir, &document),
+        run_id,
+    )?;
     let records = store.read(run_id)?;
-    let appender = Appender::open(construct_state_path(&run_dir, &document), run_id)?;
     drive(
         Runner::new(program, appender, records, Console::new(), library),
         Context::native(true),
