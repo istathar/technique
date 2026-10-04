@@ -809,6 +809,13 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             .collect();
         let lexical = render_path(&segments);
         let slot = self.slot(&lexical);
+        if given
+            .iter()
+            .any(Option::is_none)
+        {
+            self.asked
+                .push(slot.serial);
+        }
         let reask = self.reasking(slot.serial);
         // What was prompted stands only while the evaluated arguments do.
         let current = match slot.prior {
@@ -897,9 +904,6 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
             .render();
         let label = format!("<{}>", name);
         let mut supplied = Vec::new();
-        let asked = given
-            .iter()
-            .any(Option::is_none);
         for (i, value) in given
             .into_iter()
             .enumerate()
@@ -915,6 +919,10 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                     .value
                     .clone(),
                 (None, None) => {
+                    // A verdict chosen in review stands in for the prompt.
+                    if let Some(outcome) = self.verdict(slot.serial) {
+                        return self.abandon(slot, lexical, supplied, outcome);
+                    }
                     let seed = slot
                         .seed
                         .and_then(|a| {
@@ -947,10 +955,6 @@ impl<'i, 'h, 'r, D: Driver> Walker<'i, 'h, 'r, D> {
                 }
             };
             supplied.push(Supplied { value, name: bind });
-        }
-        if asked {
-            self.asked
-                .push(slot.serial);
         }
         Ok(Ok(supplied))
     }
