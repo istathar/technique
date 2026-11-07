@@ -27,7 +27,7 @@ pub enum StoreError {
     },
 }
 
-pub use history::{Activation, Effect, History, Standing, edge};
+pub use history::{Activation, Effect, History, Returned, Standing, edge};
 pub use navigation::{Journal, Motion, Position};
 pub use record::{
     InvokeTarget, Record, RecordError, RunId, Serial, State, Supplied, display_path, parse_records,

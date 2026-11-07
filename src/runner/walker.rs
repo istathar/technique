@@ -2032,9 +2032,9 @@ fn reused(history: &History, prior: Option<&Activation>, k: usize) -> Option<Flo
         .returned
         .as_ref()?
     {
-        Some(value) => Some(done(value.clone())),
-        None if last && a.standing != engraving::Standing::Closed => None,
-        None => match &a.outcome {
+        engraving::Returned::Done(value) => Some(done(value.clone())),
+        engraving::Returned::Omitted if last && a.standing != engraving::Standing::Closed => None,
+        engraving::Returned::Omitted => match &a.outcome {
             Some(State::Fail(reason)) if last && threw(history, a) => {
                 Some(Flow::Throwing(reason_of(reason)))
             }

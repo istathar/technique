@@ -553,11 +553,11 @@ fn effects_belong_to_the_activation_they_were_written_in() {
         vec![
             Effect {
                 function: "exec".to_string(),
-                returned: Some(Some(Value::Literali("1".to_string()))),
+                returned: Some(Returned::Done(Value::Literali("1".to_string()))),
             },
             Effect {
                 function: "now".to_string(),
-                returned: Some(None),
+                returned: Some(Returned::Omitted),
             },
             Effect {
                 function: "exec".to_string(),

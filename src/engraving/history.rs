@@ -18,12 +18,22 @@ pub enum Standing {
     Reopened,
 }
 
-/// One effectful host call made within an activation.
+/// An effectful builtin call made within an activation. This is kept in the
+/// journal as an `Execute`, paired with `Return` when the call returns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effect {
     pub function: String,
-    /// `None` until its `Return` is read; `Some(None)` for a bare `Return`.
-    pub returned: Option<Option<crate::value::Value>>,
+    /// `None` until its `Return` is read.
+    pub returned: Option<Returned>,
+}
+
+/// What an effectful call's `Return` recorded.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Returned {
+    /// The call completed at Done with this result value.
+    Done(crate::value::Value),
+    /// The call was Skipped or Failed.
+    Omitted,
 }
 
 /// The current activation of one slot.
@@ -199,8 +209,11 @@ impl History {
                             .effects
                             .last_mut()
                         {
-                            if let None | Some(None) = effect.returned {
-                                effect.returned = Some(value.clone());
+                            if let None | Some(Returned::Omitted) = effect.returned {
+                                effect.returned = Some(match value {
+                                    Some(value) => Returned::Done(value.clone()),
+                                    None => Returned::Omitted,
+                                });
                             }
                         }
                         activation
